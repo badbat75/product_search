@@ -10,40 +10,10 @@ import numpy as np
 import time
 import sys
 import re
-
-def load_config() -> float:
-    with open('search.cfg', 'r') as f:
-        for line in f:
-            if line.startswith('MINIMUM_ORDER='):
-                return float(line.split('=')[1].strip())
-    raise ValueError("MINIMUM_ORDER not found in search.cfg")
-
-def normalize_product_name(name: str) -> str:
-    """Convert product name to CSV filename format"""
-    # Remove trailing comma and quantity if present
-    if ',' in name:
-        name = name.split(',')[0]
-    return name.strip().replace(' ', '_')
-
-def read_products(filename: str) -> Dict[str, int]:
-    """Read products and their quantities from file"""
-    products = {}
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if ',' in line:
-                    product_name, quantity = line.split(',')
-                    products[product_name.strip()] = int(quantity)
-                else:
-                    products[line.strip()] = 1
-    except FileNotFoundError:
-        print(f"Error: File '{filename}' not found")
-        sys.exit(1)
-    return products
+from utils import read_config, normalize_product_name, read_products
 
 # Minimum order value required by vendors (excluding shipping)
-MINIMUM_ORDER = load_config()
+MINIMUM_ORDER = float(read_config(['MINIMUM_ORDER'])['MINIMUM_ORDER'])
 
 @dataclass(frozen=True)
 class Product:
@@ -408,7 +378,7 @@ class PurchaseOptimizer:
 </html>
 """
         return html_content
-        
+
     def load_data(self) -> None:
         # Process each product from the input file
         for product_name, quantity in self.products.items():

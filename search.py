@@ -1,6 +1,5 @@
 import time
 import urllib.parse
-import logging
 import anthropic
 from pathlib import Path
 from typing import List, Optional
@@ -15,6 +14,7 @@ from selenium.common.exceptions import TimeoutException
 import sys
 import json
 from datetime import datetime
+from utils import setup_logging, read_config, read_products
 
 class TrovaprezziProcessor:
     """Processor for scraping Trovaprezzi.it and processing with Claude"""
@@ -29,7 +29,7 @@ class TrovaprezziProcessor:
                  retry_count: int, 
                  browser_type: str = 'edge',
                  debug: bool = False):
-        self._setup_logging()
+        self.logger = setup_logging(__name__)
         self.client = anthropic.Anthropic(api_key=claude_api_key, max_retries=0)
         self.throttle_delay_sec = float(throttle_delay_sec)
         self.retry_count = retry_count
@@ -45,18 +45,6 @@ class TrovaprezziProcessor:
         
         self.browser_type = browser_type.lower()
         self.driver = self._init_browser()
-
-    def _setup_logging(self):
-        """Initialize logging configuration"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler('trovaprezzi.log')
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
 
     def _init_browser(self) -> webdriver.Remote:
         """Initialize and configure the selected browser"""
@@ -138,15 +126,6 @@ class TrovaprezziProcessor:
             
         except Exception as e:
             self.logger.error(f"Error saving AI response: {str(e)}")
-
-    def read_products(self, filename: str) -> List[str]:
-        """Read product list from file"""
-        try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                return [line.strip() for line in f if line.strip()]
-        except Exception as e:
-            self.logger.error(f"Error reading products file: {str(e)}")
-            return []
 
     def handle_captcha(self) -> bool:
         """Handle CAPTCHA presence"""
@@ -324,7 +303,7 @@ class TrovaprezziProcessor:
     def run(self, products_file: str) -> bool:
         """Main execution flow"""
         try:
-            products = self.read_products(products_file)
+            products = read_products(products_file)
             
             if not products:
                 self.logger.error("No products to search")
@@ -344,54 +323,7 @@ class TrovaprezziProcessor:
             if self.driver:
                 self.driver.quit()
 
-def read_config(config_file: str = "search.cfg") -> dict:
-    """Read configuration from file"""
-    config = {
-        'api_key': None,
-        'throttle_delay': 1.0,
-        'retry_count': 3,
-        'browser_type': 'edge',
-        'debug': False
-    }
-    
-    try:
-        with open(config_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                    
-                try:
-                    key, value = line.split('=', 1)
-                    key = key.strip()
-                    value = value.strip().strip('"\'')
-                    
-                    if key == "CLAUDE_API_KEY":
-                        config['api_key'] = value
-                    elif key == "THROTTLE_DELAY_SEC":
-                        config['throttle_delay'] = float(value)
-                    elif key == "RETRY_COUNT":
-                        config['retry_count'] = int(value)
-                    elif key == "BROWSER_TYPE":
-                        if value.lower() in ['edge', 'firefox', 'chrome']:
-                            config['browser_type'] = value.lower()
-                    elif key == "DEBUG":
-                        config['debug'] = value.lower() == 'true'
-                except ValueError as e:
-                    logging.warning(f"Invalid config line: {line} - {str(e)}")
-        
-        if not config['api_key']:
-            raise ValueError(f"CLAUDE_API_KEY not found in {config_file}")
-            
-        return config
-        
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Config file {config_file} not found")
-    except Exception as e:
-        raise Exception(f"Config file reading error: {str(e)}")
-
 def main():
-    """Entry point"""
     parser = argparse.ArgumentParser(
         description='Search products on Trovaprezzi and process with Claude'
     )
@@ -409,18 +341,15 @@ def main():
     
     try:
         args = parser.parse_args()
-        config = read_config()
-        
-        if args.debug:
-            config['debug'] = True
+        config = read_config(['CLAUDE_API_KEY', 'THROTTLE_DELAY_SEC', 'RETRY_COUNT', 'BROWSER_TYPE'])
         
         processor = TrovaprezziProcessor(
-            claude_api_key=config['api_key'],
-            throttle_delay_sec=config['throttle_delay'],
+            claude_api_key=config['CLAUDE_API_KEY'],
+            throttle_delay_sec=float(config['THROTTLE_DELAY_SEC']),
             output_dir=args.file,
-            retry_count=config['retry_count'],
-            browser_type=config['browser_type'],
-            debug=config['debug']
+            retry_count=int(config['RETRY_COUNT']),
+            browser_type=config['BROWSER_TYPE'],
+            debug=args.debug
         )
         
         if not processor.run(f"{args.file}.txt"):
