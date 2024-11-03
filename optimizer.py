@@ -43,8 +43,8 @@ class Order:
         """Total price of products only, excluding shipping"""
         return sum(p.total_price for p in self.products.values())
 
-def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set]) -> Tuple[float, List[Dict]]:
-    assignments, products_by_vendor, required_components = chunk_data
+def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set, float]) -> Tuple[float, List[Dict]]:
+    assignments, products_by_vendor, required_components, minimum_order = chunk_data
     best_cost = float('inf')
     best_orders = None
     
@@ -75,7 +75,7 @@ def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set]) -> Tup
         for vendor, products in orders.items():
             products_total = sum(p.total_price for p in products.values())  # Exclude shipping from minimum check
             
-            if products_total >= DEFAULT_MINIMUM_ORDER:
+            if products_total >= minimum_order:
                 # Order meets minimum requirement, keep as is
                 regrouped_orders[vendor] = products
             else:
@@ -120,7 +120,7 @@ def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set]) -> Tup
 
                     if valid:
                         products_total = sum(p.total_price for p in regroup_products.values())  # Exclude shipping from minimum check
-                        if products_total >= DEFAULT_MINIMUM_ORDER:
+                        if products_total >= minimum_order:
                             shipping = max(p.shipping for p in regroup_products.values())
                             total_cost = products_total + shipping
                             if total_cost < best_regroup_cost:
@@ -157,6 +157,11 @@ class PurchaseOptimizer:
         self.excluded_components: Set[str] = set()
         self.project_name = Path(input_file).stem
         self.products = read_products(self.input_file)
+        self.config = read_config()
+        try:
+            self.minimum_order = float(self.config['MINIMUM_ORDER'])
+        except (KeyError, ValueError):
+            self.minimum_order = DEFAULT_MINIMUM_ORDER
 
     def _print_order_table(self, vendor: str, products: Dict[str, Product], shipping_cost: float) -> None:
         col1_width = max(30, max(len(p.component_type) for p in products.values()))
@@ -304,7 +309,7 @@ class PurchaseOptimizer:
             css_content=css_content,
             num_components=len(self.required_components),
             execution_time=execution_time,
-            minimum_order=DEFAULT_MINIMUM_ORDER,
+            minimum_order=self.minimum_order,
             excluded_components_count=excluded_count_html,
             orders_html=orders_html,
             total_cost=total_cost,
@@ -375,7 +380,7 @@ class PurchaseOptimizer:
         chunk_size = max(1, len(all_combinations) // num_cores)
         chunks = [all_combinations[i:i + chunk_size] for i in range(0, len(all_combinations), chunk_size)]
         
-        chunk_data = [(chunk, self.products_by_vendor, components_to_try) for chunk in chunks]
+        chunk_data = [(chunk, self.products_by_vendor, components_to_try, self.minimum_order) for chunk in chunks]
         
         with mp.Pool(processes=num_cores) as pool:
             results = pool.map(evaluate_assignments_chunk, chunk_data)
@@ -422,7 +427,7 @@ class PurchaseOptimizer:
         print("=== Piano di Acquisto Ottimale ===")
         print(f"Numero di CPU disponibili: {mp.cpu_count()}")
         print(f"Numero di componenti da acquistare: {len(self.required_components)}")
-        print(f"Ordine minimo per venditore: €{DEFAULT_MINIMUM_ORDER:.2f} (esclusa spedizione)")
+        print(f"Ordine minimo per venditore: €{self.minimum_order:.2f} (esclusa spedizione)")
         
         start_time = time.time()
         total_cost, orders = self.optimize_with_exclusions()
