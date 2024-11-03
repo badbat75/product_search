@@ -15,18 +15,21 @@ import sys
 import json
 from datetime import datetime
 from utils import setup_logging, read_config, read_products, normalize_product_name
+from config import (
+    VAR_DATA_DIR, VAR_DEBUG_DIR, VAR_DEBUG_AI_DIR, TEMPLATES_DIR,
+    BROWSER_CONFIGS, BROWSER_OPTIONS, BASE_URL, CSV_COLUMNS,
+    DEFAULT_THROTTLE_DELAY, DEFAULT_RETRY_COUNT,
+    DEFAULT_PAGE_LOAD_TIMEOUT, DEFAULT_CAPTCHA_TIMEOUT
+)
 
 class TrovaprezziProcessor:
     """Processor for scraping Trovaprezzi.it and processing with Claude"""
     
-    BASE_URL = "https://www.trovaprezzi.it"
-    CSV_COLUMNS = ['nome_prodotto', 'prezzo', 'spedizione', 'venditore', 'link_venditore']
-    
     def __init__(self, 
                  claude_api_key: str, 
-                 throttle_delay_sec: float, 
-                 output_dir: str, 
-                 retry_count: int, 
+                 throttle_delay_sec: float = DEFAULT_THROTTLE_DELAY, 
+                 output_dir: str = None, 
+                 retry_count: int = DEFAULT_RETRY_COUNT, 
                  browser_type: str = 'edge',
                  debug: bool = False,
                  debug_ai: bool = False):
@@ -39,39 +42,33 @@ class TrovaprezziProcessor:
         self.debug_ai = debug_ai
         
         # Use var/data directory for CSV files
-        self.csv_dir = Path('var/data')
-        self.csv_dir.mkdir(parents=True, exist_ok=True)
+        self.csv_dir = VAR_DATA_DIR
         
         # Create AI responses directory if debug_ai is enabled
         if self.debug_ai:
-            self.ai_responses_dir = Path('var/debug/ai')
-            self.ai_responses_dir.mkdir(parents=True, exist_ok=True)
+            self.ai_responses_dir = VAR_DEBUG_AI_DIR
         
         self.browser_type = browser_type.lower()
         self.driver = self._init_browser()
 
     def _init_browser(self) -> webdriver.Remote:
         """Initialize and configure the selected browser"""
-        browser_configs = {
-            'edge': (webdriver.EdgeOptions, webdriver.Edge),
-            'firefox': (webdriver.FirefoxOptions, webdriver.Firefox),
-            'chrome': (webdriver.ChromeOptions, webdriver.Chrome)
-        }
-        
         try:
-            if self.browser_type not in browser_configs:
+            if self.browser_type not in BROWSER_CONFIGS:
                 raise ValueError(f"Unsupported browser type: {self.browser_type}")
             
-            OptionsClass, DriverClass = browser_configs[self.browser_type]
+            options_name, driver_name = BROWSER_CONFIGS[self.browser_type]
+            OptionsClass = getattr(webdriver, options_name)
+            DriverClass = getattr(webdriver, driver_name)
+            
             options = OptionsClass()
             
-            # Common browser options
-            options.add_argument('--start-maximized')
-            options.add_argument('--disable-popup-blocking')
-            options.add_argument('--disable-notifications')
+            # Add common browser options
+            for option in BROWSER_OPTIONS:
+                options.add_argument(option)
             
             driver = DriverClass(options=options)
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(DEFAULT_PAGE_LOAD_TIMEOUT)
             
             self.logger.info(f"Browser {self.browser_type} initialized successfully")
             return driver
@@ -96,7 +93,7 @@ class TrovaprezziProcessor:
         """Convert relative URL to absolute"""
         if not url or url.startswith('http'):
             return url
-        return f"{self.BASE_URL}{url}"
+        return f"{BASE_URL}{url}"
 
     def _parse_price(self, price_str: str) -> Optional[float]:
         """Parse price string to float, handling European number format"""
@@ -141,7 +138,7 @@ class TrovaprezziProcessor:
                 return False
                 
             self.logger.info("CAPTCHA detected, waiting for human input...")
-            WebDriverWait(self.driver, 300).until(
+            WebDriverWait(self.driver, DEFAULT_CAPTCHA_TIMEOUT).until(
                 lambda driver: "captcha" not in driver.current_url.lower()
             )
             self.logger.info("CAPTCHA resolved")
@@ -249,7 +246,7 @@ class TrovaprezziProcessor:
             
             with open(csv_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f, delimiter=',', quoting=csv.QUOTE_NONNUMERIC)
-                writer.writerow(self.CSV_COLUMNS)
+                writer.writerow(CSV_COLUMNS)
                 writer.writerows(data)
             
             self.logger.info(f"Data saved to: {csv_path}")
@@ -270,11 +267,11 @@ class TrovaprezziProcessor:
                 return True
 
             # Prepare search
-            search_url = f"{self.BASE_URL}/categoria.aspx?id=-1&libera={urllib.parse.quote(product_name)}"
+            search_url = f"{BASE_URL}/categoria.aspx?id=-1&libera={urllib.parse.quote(product_name)}"
             self.logger.info(f"Searching: {product_name}")
             
             # Visit homepage first
-            self.driver.get(self.BASE_URL)
+            self.driver.get(BASE_URL)
             self._random_delay()
             
             # Search page
@@ -292,7 +289,8 @@ class TrovaprezziProcessor:
             # Process and save
             html_content = self.driver.page_source
             if self.debug:
-                Path('debug_last_page.html').write_text(html_content, encoding='utf-8')
+                debug_file = VAR_DEBUG_DIR / 'debug_last_page.html'
+                debug_file.write_text(html_content, encoding='utf-8')
             
             data = self.process_html_with_claude(html_content, product_name)
             
@@ -360,10 +358,10 @@ def main():
         
         processor = TrovaprezziProcessor(
             claude_api_key=config['CLAUDE_API_KEY'],
-            throttle_delay_sec=float(config['THROTTLE_DELAY_SEC']),
+            throttle_delay_sec=float(config.get('THROTTLE_DELAY_SEC', DEFAULT_THROTTLE_DELAY)),
             output_dir=output_dir,
-            retry_count=int(config['RETRY_COUNT']),
-            browser_type=config['BROWSER_TYPE'],
+            retry_count=int(config.get('RETRY_COUNT', DEFAULT_RETRY_COUNT)),
+            browser_type=config.get('BROWSER_TYPE', 'edge'),
             debug=args.debug,
             debug_ai=args.debug_ai
         )

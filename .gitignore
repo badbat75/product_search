@@ -1,6 +1,6 @@
 __pycache__
 var
-search.cfg
+conf/search.cfg
 *.txt
 *.csv
 *.html

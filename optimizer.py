@@ -4,7 +4,6 @@ import argparse
 from typing import Dict, List, Tuple, Set
 from dataclasses import dataclass
 from pathlib import Path
-from itertools import combinations, product
 import multiprocessing as mp
 import numpy as np
 import time
@@ -12,9 +11,8 @@ import sys
 import re
 import shutil
 from utils import read_config, normalize_product_name, read_products
-
-# Minimum order value required by vendors (excluding shipping)
-MINIMUM_ORDER = float(read_config(['MINIMUM_ORDER'])['MINIMUM_ORDER'])
+from config import VAR_DATA_DIR, TEMPLATES_DIR, DEFAULT_MINIMUM_ORDER
+from itertools import combinations, product
 
 @dataclass(frozen=True)
 class Product:
@@ -77,7 +75,7 @@ def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set]) -> Tup
         for vendor, products in orders.items():
             products_total = sum(p.total_price for p in products.values())  # Exclude shipping from minimum check
             
-            if products_total >= MINIMUM_ORDER:
+            if products_total >= DEFAULT_MINIMUM_ORDER:
                 # Order meets minimum requirement, keep as is
                 regrouped_orders[vendor] = products
             else:
@@ -122,7 +120,7 @@ def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set]) -> Tup
 
                     if valid:
                         products_total = sum(p.total_price for p in regroup_products.values())  # Exclude shipping from minimum check
-                        if products_total >= MINIMUM_ORDER:
+                        if products_total >= DEFAULT_MINIMUM_ORDER:
                             shipping = max(p.shipping for p in regroup_products.values())
                             total_cost = products_total + shipping
                             if total_cost < best_regroup_cost:
@@ -152,12 +150,12 @@ def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set]) -> Tup
 class PurchaseOptimizer:
     def __init__(self, input_file: str):
         self.input_file = input_file
-        self.csv_folder = Path('var/data')  # Updated to use var/data directory
+        self.csv_folder = VAR_DATA_DIR
         self.products_by_component: Dict[str, List[Product]] = {}
         self.products_by_vendor: Dict[str, List[Product]] = {}
         self.required_components: Set[str] = set()
         self.excluded_components: Set[str] = set()
-        self.project_name = Path(input_file).stem  # Use file stem (name without extension)
+        self.project_name = Path(input_file).stem
         self.products = read_products(self.input_file)
 
     def _print_order_table(self, vendor: str, products: Dict[str, Product], shipping_cost: float) -> None:
@@ -270,16 +268,26 @@ class PurchaseOptimizer:
 
     def _read_html_template(self) -> str:
         """Read HTML template from file"""
-        template_path = Path('templates/purchase_plan.html')
+        template_path = TEMPLATES_DIR / 'purchase_plan.html'
         try:
             return template_path.read_text(encoding='utf-8')
         except Exception as e:
             print(f"Error reading HTML template: {str(e)}")
             sys.exit(1)
 
+    def _read_css_template(self) -> str:
+        """Read CSS template from file"""
+        css_path = TEMPLATES_DIR / 'style.css'
+        try:
+            return css_path.read_text(encoding='utf-8')
+        except Exception as e:
+            print(f"Error reading CSS template: {str(e)}")
+            sys.exit(1)
+
     def _generate_html_content(self, total_cost: float, orders: Dict, execution_time: float) -> str:
         """Generate HTML content using template"""
         template = self._read_html_template()
+        css_content = self._read_css_template()
         
         # Generate excluded components count HTML
         excluded_count_html = ""
@@ -293,9 +301,10 @@ class PurchaseOptimizer:
         
         # Fill template with data
         return template.format(
+            css_content=css_content,
             num_components=len(self.required_components),
             execution_time=execution_time,
-            minimum_order=MINIMUM_ORDER,
+            minimum_order=DEFAULT_MINIMUM_ORDER,
             excluded_components_count=excluded_count_html,
             orders_html=orders_html,
             total_cost=total_cost,
@@ -413,7 +422,7 @@ class PurchaseOptimizer:
         print("=== Piano di Acquisto Ottimale ===")
         print(f"Numero di CPU disponibili: {mp.cpu_count()}")
         print(f"Numero di componenti da acquistare: {len(self.required_components)}")
-        print(f"Ordine minimo per venditore: €{MINIMUM_ORDER:.2f} (esclusa spedizione)")
+        print(f"Ordine minimo per venditore: €{DEFAULT_MINIMUM_ORDER:.2f} (esclusa spedizione)")
         
         start_time = time.time()
         total_cost, orders = self.optimize_with_exclusions()
@@ -440,14 +449,9 @@ class PurchaseOptimizer:
             html_content = self._generate_html_content(total_cost, orders, execution_time)
             html_filename = f"{self.project_name}_purchase_plan.html"
             
-            # Create output directory for HTML and CSS
+            # Create output directory for HTML
             output_dir = Path(html_filename).parent
             output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Copy CSS file to output directory
-            css_src = Path('templates/style.css')
-            css_dest = output_dir / 'style.css'
-            shutil.copy2(css_src, css_dest)
             
             # Write HTML file
             with open(html_filename, 'w', encoding='utf-8') as f:

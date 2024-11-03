@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any
 import sys
+from config import SEARCH_CONFIG_PATH
 
 def setup_logging(name: str) -> logging.Logger:
     """Initialize logging configuration"""
@@ -30,7 +31,7 @@ def read_config(required_keys: list[str] = None) -> Dict[str, Any]:
     """
     config = {}
     try:
-        with open('search.cfg', 'r', encoding='utf-8') as f:
+        with open(SEARCH_CONFIG_PATH, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'):
@@ -52,7 +53,7 @@ def read_config(required_keys: list[str] = None) -> Dict[str, Any]:
         return config
         
     except FileNotFoundError:
-        raise FileNotFoundError("Config file search.cfg not found")
+        raise FileNotFoundError(f"Config file {SEARCH_CONFIG_PATH} not found")
     except Exception as e:
         raise Exception(f"Config file reading error: {str(e)}")
 
