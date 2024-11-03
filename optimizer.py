@@ -10,6 +10,7 @@ import numpy as np
 import time
 import sys
 import re
+import shutil
 from utils import read_config, normalize_product_name, read_products
 
 # Minimum order value required by vendors (excluding shipping)
@@ -197,119 +198,15 @@ class PurchaseOptimizer:
         print(f"(Totale prodotti senza spedizione: €{order_total:.2f})")
         print()
 
-    def _generate_html_content(self, total_cost: float, orders: Dict, execution_time: float) -> str:
-        html_content = f"""
-<!DOCTYPE html>
-<html lang="it">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Piano di Acquisto Ottimale</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .header {{
-            background-color: #2c3e50;
-            color: white;
-            padding: 20px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }}
-        .order-card {{
-            background-color: white;
-            border-radius: 5px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .vendor-header {{
-            background-color: #34495e;
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 15px;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 15px;
-        }}
-        th, td {{
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-        }}
-        th {{
-            background-color: #f8f9fa;
-        }}
-        .price {{
-            text-align: right;
-            font-family: monospace;
-        }}
-        .quantity {{
-            text-align: right;
-            font-family: monospace;
-        }}
-        .total-row {{
-            font-weight: bold;
-            background-color: #f8f9fa;
-        }}
-        .final-total {{
-            background-color: #2c3e50;
-            color: white;
-            padding: 20px;
-            border-radius: 5px;
-            margin-top: 20px;
-            font-size: 1.2em;
-        }}
-        .excluded {{
-            background-color: #e74c3c;
-            color: white;
-            padding: 20px;
-            border-radius: 5px;
-            margin-top: 20px;
-        }}
-        a {{
-            color: #3498db;
-            text-decoration: none;
-        }}
-        a:hover {{
-            text-decoration: underline;
-        }}
-        .subtotal {{
-            font-size: 0.9em;
-            color: #666;
-            margin-top: 5px;
-            text-align: right;
-        }}
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>Piano di Acquisto Ottimale</h1>
-        <p>Numero di componenti da acquistare: {len(self.required_components)}</p>
-        <p>Tempo di elaborazione: {execution_time:.2f} secondi</p>
-        <p>Ordine minimo per venditore: €{MINIMUM_ORDER:.2f} (esclusa spedizione)</p>
-"""
-        if self.excluded_components:
-            html_content += f"""
-        <p style="color: #e74c3c;">Componenti esclusi: {len(self.excluded_components)}</p>
-"""
-        html_content += """
-    </div>
-"""
-        
+    def _generate_orders_html(self, orders: Dict) -> str:
+        """Generate HTML for orders section"""
+        orders_html = ""
         for vendor, products in orders.items():
             shipping_cost = max(p.shipping for p in products.values())
             products_total = sum(p.total_price for p in products.values())
             order_total = products_total + shipping_cost
             
-            html_content += f"""
+            orders_html += f"""
     <div class="order-card">
         <div class="vendor-header">
             <h2>Ordine da {vendor}</h2>
@@ -323,20 +220,18 @@ class PurchaseOptimizer:
                     <th class="price">Prezzo</th>
                 </tr>
             </thead>
-            <tbody>
-"""
+            <tbody>"""
             
             for component, product in sorted(products.items()):
-                html_content += f"""
+                orders_html += f"""
                 <tr>
                     <td>{product.component_type}</td>
                     <td><a href="{product.url}" target="_blank">{product.name}</a></td>
                     <td class="quantity">{product.quantity}</td>
                     <td class="price">€{product.total_price:.2f}</td>
-                </tr>
-"""
+                </tr>"""
             
-            html_content += f"""
+            orders_html += f"""
                 <tr>
                     <td colspan="3">Spese di spedizione</td>
                     <td class="price">€{shipping_cost:.2f}</td>
@@ -348,36 +243,64 @@ class PurchaseOptimizer:
             </tbody>
         </table>
         <div class="subtotal">Totale prodotti senza spedizione: €{products_total:.2f}</div>
-    </div>
-"""
+    </div>"""
+        
+        return orders_html
 
-        html_content += f"""
-    <div class="final-total">
-        <h2>Costo Totale Finale: €{total_cost:.2f}</h2>
-    </div>
-"""
-
-        if self.excluded_components:
-            html_content += f"""
+    def _generate_excluded_components_html(self) -> str:
+        """Generate HTML for excluded components section"""
+        if not self.excluded_components:
+            return ""
+            
+        excluded_html = """
     <div class="excluded">
         <h3>Componenti Esclusi</h3>
         <p>I seguenti componenti sono stati esclusi perché non è stato possibile raggrupparli per raggiungere l'ordine minimo:</p>
-        <ul>
-"""
-            for component in sorted(self.excluded_components):
-                html_content += f"""
-            <li>{component}</li>
-"""
-            html_content += """
+        <ul>"""
+            
+        for component in sorted(self.excluded_components):
+            excluded_html += f"""
+            <li>{component}</li>"""
+            
+        excluded_html += """
         </ul>
-    </div>
-"""
+    </div>"""
+        
+        return excluded_html
 
-        html_content += """
-</body>
-</html>
-"""
-        return html_content
+    def _read_html_template(self) -> str:
+        """Read HTML template from file"""
+        template_path = Path('templates/purchase_plan.html')
+        try:
+            return template_path.read_text(encoding='utf-8')
+        except Exception as e:
+            print(f"Error reading HTML template: {str(e)}")
+            sys.exit(1)
+
+    def _generate_html_content(self, total_cost: float, orders: Dict, execution_time: float) -> str:
+        """Generate HTML content using template"""
+        template = self._read_html_template()
+        
+        # Generate excluded components count HTML
+        excluded_count_html = ""
+        if self.excluded_components:
+            excluded_count_html = f"""
+        <p style="color: #e74c3c;">Componenti esclusi: {len(self.excluded_components)}</p>"""
+        
+        # Generate orders and excluded components HTML
+        orders_html = self._generate_orders_html(orders)
+        excluded_components_html = self._generate_excluded_components_html()
+        
+        # Fill template with data
+        return template.format(
+            num_components=len(self.required_components),
+            execution_time=execution_time,
+            minimum_order=MINIMUM_ORDER,
+            excluded_components_count=excluded_count_html,
+            orders_html=orders_html,
+            total_cost=total_cost,
+            excluded_components_html=excluded_components_html
+        )
 
     def load_data(self) -> None:
         # Process each product from the input file
@@ -513,8 +436,20 @@ class PurchaseOptimizer:
             print(f"Tempo di elaborazione: {execution_time:.2f} secondi")
             print("=" * 80)
 
+            # Generate HTML report
             html_content = self._generate_html_content(total_cost, orders, execution_time)
             html_filename = f"{self.project_name}_purchase_plan.html"
+            
+            # Create output directory for HTML and CSS
+            output_dir = Path(html_filename).parent
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy CSS file to output directory
+            css_src = Path('templates/style.css')
+            css_dest = output_dir / 'style.css'
+            shutil.copy2(css_src, css_dest)
+            
+            # Write HTML file
             with open(html_filename, 'w', encoding='utf-8') as f:
                 f.write(html_content)
             print(f"\nReport HTML generato in '{html_filename}'")
