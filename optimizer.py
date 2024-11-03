@@ -150,13 +150,13 @@ def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set]) -> Tup
 
 class PurchaseOptimizer:
     def __init__(self, input_file: str):
-        self.input_file = f"{input_file}.txt"
-        self.csv_folder = Path(input_file)
+        self.input_file = input_file
+        self.csv_folder = Path('var/data')  # Updated to use var/data directory
         self.products_by_component: Dict[str, List[Product]] = {}
         self.products_by_vendor: Dict[str, List[Product]] = {}
         self.required_components: Set[str] = set()
         self.excluded_components: Set[str] = set()
-        self.project_name = input_file
+        self.project_name = Path(input_file).stem  # Use file stem (name without extension)
         self.products = read_products(self.input_file)
 
     def _print_order_table(self, vendor: str, products: Dict[str, Product], shipping_cost: float) -> None:
@@ -524,14 +524,13 @@ def main():
         description='Optimize purchase plan from product data'
     )
     parser.add_argument(
-        '-f', '--file',
+        'input_file',
         type=str,
-        default='products',
-        help='Input file name (without .txt extension)'
+        help='Input file with shopping list (e.g., farmacia.txt, list.csv)'
     )
     
     args = parser.parse_args()
-    optimizer = PurchaseOptimizer(args.file)
+    optimizer = PurchaseOptimizer(args.input_file)
     optimizer.load_data()
     optimizer.generate_purchase_plan()
 

@@ -14,7 +14,7 @@ from selenium.common.exceptions import TimeoutException
 import sys
 import json
 from datetime import datetime
-from utils import setup_logging, read_config, read_products
+from utils import setup_logging, read_config, read_products, normalize_product_name
 
 class TrovaprezziProcessor:
     """Processor for scraping Trovaprezzi.it and processing with Claude"""
@@ -28,20 +28,24 @@ class TrovaprezziProcessor:
                  output_dir: str, 
                  retry_count: int, 
                  browser_type: str = 'edge',
-                 debug: bool = False):
+                 debug: bool = False,
+                 debug_ai: bool = False):
         self.logger = setup_logging(__name__)
         self.client = anthropic.Anthropic(api_key=claude_api_key, max_retries=0)
         self.throttle_delay_sec = float(throttle_delay_sec)
         self.retry_count = retry_count
         self.last_api_call_time = None
         self.debug = debug
+        self.debug_ai = debug_ai
         
-        self.csv_dir = Path(output_dir)
-        self.csv_dir.mkdir(exist_ok=True)
+        # Use var/data directory for CSV files
+        self.csv_dir = Path('var/data')
+        self.csv_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create AI responses directory
-        self.ai_responses_dir = self.csv_dir / 'ai_responses'
-        self.ai_responses_dir.mkdir(exist_ok=True)
+        # Create AI responses directory if debug_ai is enabled
+        if self.debug_ai:
+            self.ai_responses_dir = Path('var/debug/ai')
+            self.ai_responses_dir.mkdir(parents=True, exist_ok=True)
         
         self.browser_type = browser_type.lower()
         self.driver = self._init_browser()
@@ -114,6 +118,9 @@ class TrovaprezziProcessor:
 
     def _save_ai_response(self, product_name: str, response_data: dict):
         """Save AI response data to JSON file"""
+        if not self.debug_ai:
+            return
+            
         try:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = f"{product_name.replace(' ', '_')}_{timestamp}.json"
@@ -184,15 +191,16 @@ class TrovaprezziProcessor:
             self.last_api_call_time = time.time()
             response_content = message.content[0].text.strip()
             
-            # Save AI response
-            response_data = {
-                "timestamp": datetime.now().isoformat(),
-                "product_name": product_name,
-                "prompt": prompt,
-                "html_content": html_content,
-                "response": response_content
-            }
-            self._save_ai_response(product_name, response_data)
+            # Save AI response if debug_ai is enabled
+            if self.debug_ai:
+                response_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "product_name": product_name,
+                    "prompt": prompt,
+                    "html_content": html_content,
+                    "response": response_content
+                }
+                self._save_ai_response(product_name, response_data)
             
             # Process response
             data = []
@@ -236,7 +244,7 @@ class TrovaprezziProcessor:
     def save_to_csv(self, data: List[List[str]], product_name: str) -> Optional[Path]:
         """Save extracted data to CSV"""
         try:
-            filename = product_name.replace(' ', '_')
+            filename = normalize_product_name(product_name)
             csv_path = self.csv_dir / f"{filename}.csv"
             
             with open(csv_path, 'w', newline='', encoding='utf-8') as f:
@@ -255,7 +263,7 @@ class TrovaprezziProcessor:
         """Process a single product search"""
         try:
             # Check for existing CSV
-            filename = product_name.replace(' ', '_')
+            filename = normalize_product_name(product_name)
             csv_path = self.csv_dir / f"{filename}.csv"
             if csv_path.exists():
                 self.logger.info(f"CSV exists, skipping: {csv_path}")
@@ -328,31 +336,39 @@ def main():
         description='Search products on Trovaprezzi and process with Claude'
     )
     parser.add_argument(
-        '-f', '--file',
+        'input_file',
         type=str,
-        default='products',
-        help='Input file name (without .txt extension)'
+        help='Input file with shopping list (e.g., farmacia.txt, list.csv)'
     )
     parser.add_argument(
         '--debug',
         action='store_true',
         help='Enable debug mode'
     )
+    parser.add_argument(
+        '--debug-ai',
+        action='store_true',
+        help='Enable AI response debugging (saves responses to var/debug/ai)'
+    )
     
     try:
         args = parser.parse_args()
         config = read_config(['CLAUDE_API_KEY', 'THROTTLE_DELAY_SEC', 'RETRY_COUNT', 'BROWSER_TYPE'])
         
+        # Use file stem (name without extension) for output directory
+        output_dir = Path(args.input_file).stem
+        
         processor = TrovaprezziProcessor(
             claude_api_key=config['CLAUDE_API_KEY'],
             throttle_delay_sec=float(config['THROTTLE_DELAY_SEC']),
-            output_dir=args.file,
+            output_dir=output_dir,
             retry_count=int(config['RETRY_COUNT']),
             browser_type=config['BROWSER_TYPE'],
-            debug=args.debug
+            debug=args.debug,
+            debug_ai=args.debug_ai
         )
         
-        if not processor.run(f"{args.file}.txt"):
+        if not processor.run(args.input_file):
             sys.exit(1)
             
     except Exception as e:
