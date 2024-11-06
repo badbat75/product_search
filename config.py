@@ -37,6 +37,7 @@ DEFAULT_CAPTCHA_TIMEOUT = 300
 
 # Order configuration
 DEFAULT_MINIMUM_ORDER = 50.0  # Default minimum order value in euros
+DEFAULT_MAX_VENDOR_COMBINATIONS = 4  # Default maximum number of vendors to combine
 
 # Create necessary directories
 VAR_DATA_DIR.mkdir(parents=True, exist_ok=True)

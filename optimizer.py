@@ -10,7 +10,7 @@ import re
 import shutil
 import itertools
 from utils import read_config, normalize_product_name, read_products
-from config import VAR_DATA_DIR, TEMPLATES_DIR, DEFAULT_MINIMUM_ORDER
+from config import VAR_DATA_DIR, TEMPLATES_DIR, DEFAULT_MINIMUM_ORDER, DEFAULT_MAX_VENDOR_COMBINATIONS
 
 @dataclass(frozen=True)
 class Product:
@@ -89,6 +89,10 @@ class PurchaseOptimizer:
             self.minimum_order = float(self.config['MINIMUM_ORDER'])
         except (KeyError, ValueError):
             self.minimum_order = DEFAULT_MINIMUM_ORDER
+        try:
+            self.max_vendor_combinations = int(self.config['MAX_VENDOR_COMBINATIONS'])
+        except (KeyError, ValueError):
+            self.max_vendor_combinations = DEFAULT_MAX_VENDOR_COMBINATIONS
 
     def _generate_orders_html(self, orders: Dict) -> str:
         """Generate HTML for orders section"""
@@ -343,7 +347,8 @@ class PurchaseOptimizer:
                                            min(p.shipping for p in self.products_by_vendor[v])))
         
         # Try different numbers of vendors, starting with smaller groups
-        for num_vendors in range(1, len(sorted_vendors) + 1):
+        max_vendors = min(self.max_vendor_combinations, len(sorted_vendors))
+        for num_vendors in range(1, max_vendors + 1):
             print(f"Trying combinations of {num_vendors} vendors...")
             
             # Generate vendor combinations, prioritizing vendors that can fulfill more components
@@ -353,10 +358,6 @@ class PurchaseOptimizer:
                     best_cost = cost
                     best_orders = orders
                     print(f"Found better solution: €{best_cost:.2f}")
-            
-            # If we found a valid solution, don't try larger vendor groups
-            if best_orders:
-                break
         
         return best_cost, best_orders
 
@@ -380,6 +381,7 @@ class PurchaseOptimizer:
         print("=== Piano di Acquisto Ottimale ===")
         print(f"Numero di componenti da acquistare: {len(self.required_components)}")
         print(f"Ordine minimo per venditore: €{self.minimum_order:.2f} (esclusa spedizione)")
+        print(f"Numero massimo di venditori da combinare: {self.max_vendor_combinations}")
         
         start_time = time.time()
         try:
