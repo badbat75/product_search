@@ -83,12 +83,6 @@ class TrovaprezziProcessor:
             time.sleep(self.throttle_delay_sec)
             self.logger.debug(f"Throttled for {self.throttle_delay_sec}s")
 
-    def _random_delay(self, min_sec: float = 2, max_sec: float = 5):
-        """Add random delay between requests"""
-        delay = random.uniform(min_sec, max_sec)
-        time.sleep(delay)
-        self.logger.debug(f"Random delay: {delay:.2f}s")
-
     def _convert_to_absolute_url(self, url: str) -> str:
         """Convert relative URL to absolute"""
         if not url or url.startswith('http'):
@@ -228,7 +222,7 @@ class TrovaprezziProcessor:
             attempt = retry_count + 2
             self.logger.warning(f"Rate limit error (429) - Attempt {attempt}/{self.retry_count + 1}")
             if retry_count < self.retry_count:
-                time.sleep(self.throttle_delay_sec * 2)  # Double delay on retry
+                time.sleep(self.throttle_delay_sec)  # Double delay on retry
                 return self.process_html_with_claude(html_content, product_name, retry_count + 1)
             self.logger.error("Max retries exceeded for rate limiting")
             raise
@@ -272,7 +266,6 @@ class TrovaprezziProcessor:
             
             # Visit homepage first
             self.driver.get(BASE_URL)
-            self._random_delay()
             
             # Search page
             self.driver.get(search_url)
@@ -303,8 +296,6 @@ class TrovaprezziProcessor:
         except Exception as e:
             self.logger.error(f"Error processing {product_name}: {str(e)}")
             return False
-        finally:
-            self._random_delay()
 
     def run(self, products_file: str) -> bool:
         """Main execution flow"""
