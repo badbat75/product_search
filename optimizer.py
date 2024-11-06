@@ -1,20 +1,16 @@
 import pandas as pd
 import os
 import argparse
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple, Set, Optional
 from dataclasses import dataclass
 from pathlib import Path
-import multiprocessing as mp
-import numpy as np
 import time
 import sys
 import re
 import shutil
+import itertools
 from utils import read_config, normalize_product_name, read_products
 from config import VAR_DATA_DIR, TEMPLATES_DIR, DEFAULT_MINIMUM_ORDER
-from itertools import combinations, product
-from concurrent.futures import TimeoutError
-from functools import partial
 
 @dataclass(frozen=True)
 class Product:
@@ -40,98 +36,43 @@ def get_best_product_for_component(products: List[Product], consider_shipping: b
         return min(products, key=lambda p: p.total_cost)
     return min(products, key=lambda p: p.total_price)
 
-def evaluate_assignments_chunk(chunk_data: Tuple[List[Tuple], Dict, Set, float], timeout: int = 60) -> Tuple[float, Dict]:
-    assignments, products_by_vendor, required_components, minimum_order = chunk_data
-    best_cost = float('inf')
-    best_orders = None
-    best_shipping_cost = float('inf')
-    
-    start_time = time.time()
-    
-    for assignment in assignments:
-        # Check timeout
-        if time.time() - start_time > timeout:
-            print(f"Chunk evaluation timed out after {timeout} seconds")
-            return best_cost, best_orders
-            
-        orders = {}
-        total_cost = 0
-        total_shipping = 0
-        components_covered = set()
-        
-        # Group products by vendor
-        for component, vendor in assignment:
-            if vendor not in orders:
-                orders[vendor] = {}
-            
-            vendor_products = [p for p in products_by_vendor[vendor] if p.component_type == component]
-            if vendor_products:
-                best_product = get_best_product_for_component(vendor_products)
-                orders[vendor][component] = best_product
-                components_covered.add(component)
-        
-        if components_covered != required_components:
-            continue
+def print_order_table(vendor: str, products: Dict[str, Product], shipping_cost: float) -> None:
+    col1_width = max(30, max(len(p.component_type) for p in products.values()))
+    col2_width = 40
+    col3_width = 8
+    col4_width = 12
 
-        # Check minimum order requirements and calculate total cost
-        valid_orders = {}
-        for vendor, products in orders.items():
-            products_total = sum(p.total_price for p in products.values())
-            if products_total >= minimum_order:
-                shipping_cost = max(p.shipping for p in products.values())
-                total_cost += products_total + shipping_cost
-                total_shipping += shipping_cost
-                valid_orders[vendor] = products
-            else:
-                # Try to find another vendor that can fulfill these products
-                best_alt_vendor = None
-                best_alt_cost = float('inf')
-                best_alt_products = None
-                best_alt_shipping = float('inf')
-                
-                for alt_vendor, vendor_products in products_by_vendor.items():
-                    if alt_vendor == vendor:
-                        continue
-                        
-                    alt_products = {}
-                    alt_total = 0
-                    valid = True
-                    
-                    for component in products:
-                        alt_vendor_products = [p for p in vendor_products if p.component_type == component]
-                        if alt_vendor_products:
-                            best_alt_product = get_best_product_for_component(alt_vendor_products)
-                            alt_products[component] = best_alt_product
-                            alt_total += best_alt_product.total_price
-                        else:
-                            valid = False
-                            break
-                    
-                    if valid and alt_total >= minimum_order:
-                        alt_shipping = max(p.shipping for p in alt_products.values())
-                        alt_cost = alt_total + alt_shipping
-                        if alt_cost < best_alt_cost or (alt_cost == best_alt_cost and alt_shipping < best_alt_shipping):
-                            best_alt_cost = alt_cost
-                            best_alt_shipping = alt_shipping
-                            best_alt_vendor = alt_vendor
-                            best_alt_products = alt_products
-                
-                if best_alt_vendor:
-                    total_cost += best_alt_cost
-                    total_shipping += best_alt_shipping
-                    valid_orders[best_alt_vendor] = best_alt_products
-                else:
-                    total_cost = float('inf')
-                    total_shipping = float('inf')
-                    break
-        
-        # Prioritize solutions with lower total cost, using shipping as a tiebreaker
-        if total_cost < best_cost or (total_cost == best_cost and total_shipping < best_shipping_cost):
-            best_cost = total_cost
-            best_shipping_cost = total_shipping
-            best_orders = valid_orders
+    print(f"\nOrdine da {vendor}")
+    print("-" * (col1_width + col2_width + col3_width + col4_width + 6))
     
-    return best_cost, best_orders
+    header = (f"{'Componente':<{col1_width}} "
+             f"{'Prodotto':<{col2_width}} "
+             f"{'Qtà':>{col3_width}} "
+             f"{'Prezzo':>{col4_width}}")
+    print(header)
+    print("-" * (col1_width + col2_width + col3_width + col4_width + 6))
+    
+    order_total = 0
+    for component, product in sorted(products.items()):
+        truncated_name = product.name[:40] if len(product.name) > 40 else product.name
+        row = (f"{product.component_type:<{col1_width}} "
+               f"{truncated_name:<{col2_width}} "
+               f"{product.quantity:>{col3_width}} "
+               f"€{product.total_price:>{10}.2f}")
+        print(row)
+        order_total += product.total_price
+    
+    print("-" * (col1_width + col2_width + col3_width + col4_width + 6))
+    shipping_row = (f"{'Spese di spedizione':<{col1_width + col2_width + col3_width + 1}}"
+                   f"€{shipping_cost:>{10}.2f}")
+    print(shipping_row)
+    
+    print("-" * (col1_width + col2_width + col3_width + col4_width + 6))
+    total_row = (f"{'TOTALE':<{col1_width + col2_width + col3_width + 1}}"
+                 f"€{(order_total + shipping_cost):>{10}.2f}")
+    print(total_row)
+    print(f"(Totale prodotti senza spedizione: €{order_total:.2f})")
+    print()
 
 class PurchaseOptimizer:
     def __init__(self, input_file: str):
@@ -148,48 +89,6 @@ class PurchaseOptimizer:
             self.minimum_order = float(self.config['MINIMUM_ORDER'])
         except (KeyError, ValueError):
             self.minimum_order = DEFAULT_MINIMUM_ORDER
-        
-        # Add timeout and max combinations settings
-        self.timeout = 300  # 5 minutes timeout
-        self.max_combinations = 1000000  # Limit number of combinations to prevent memory issues
-
-    def _print_order_table(self, vendor: str, products: Dict[str, Product], shipping_cost: float) -> None:
-        col1_width = max(30, max(len(p.component_type) for p in products.values()))
-        col2_width = 40
-        col3_width = 8
-        col4_width = 12
-
-        print(f"\nOrdine da {vendor}")
-        print("-" * (col1_width + col2_width + col3_width + col4_width + 6))
-        
-        header = (f"{'Componente':<{col1_width}} "
-                 f"{'Prodotto':<{col2_width}} "
-                 f"{'Qtà':>{col3_width}} "
-                 f"{'Prezzo':>{col4_width}}")
-        print(header)
-        print("-" * (col1_width + col2_width + col3_width + col4_width + 6))
-        
-        order_total = 0
-        for component, product in sorted(products.items()):
-            truncated_name = product.name[:40] if len(product.name) > 40 else product.name
-            row = (f"{product.component_type:<{col1_width}} "
-                   f"{truncated_name:<{col2_width}} "
-                   f"{product.quantity:>{col3_width}} "
-                   f"€{product.total_price:>{10}.2f}")
-            print(row)
-            order_total += product.total_price
-        
-        print("-" * (col1_width + col2_width + col3_width + col4_width + 6))
-        shipping_row = (f"{'Spese di spedizione':<{col1_width + col2_width + col3_width + 1}}"
-                       f"€{shipping_cost:>{10}.2f}")
-        print(shipping_row)
-        
-        print("-" * (col1_width + col2_width + col3_width + col4_width + 6))
-        total_row = (f"{'TOTALE':<{col1_width + col2_width + col3_width + 1}}"
-                     f"€{(order_total + shipping_cost):>{10}.2f}")
-        print(total_row)
-        print(f"(Totale prodotti senza spedizione: €{order_total:.2f})")
-        print()
 
     def _generate_orders_html(self, orders: Dict) -> str:
         """Generate HTML for orders section"""
@@ -240,27 +139,6 @@ class PurchaseOptimizer:
         
         return orders_html
 
-    def _generate_excluded_components_html(self) -> str:
-        """Generate HTML for excluded components section"""
-        if not self.excluded_components:
-            return ""
-            
-        excluded_html = """
-    <div class="excluded">
-        <h3>Componenti Esclusi</h3>
-        <p>I seguenti componenti sono stati esclusi perché non è stato possibile raggrupparli per raggiungere l'ordine minimo:</p>
-        <ul>"""
-            
-        for component in sorted(self.excluded_components):
-            excluded_html += f"""
-            <li>{component}</li>"""
-            
-        excluded_html += """
-        </ul>
-    </div>"""
-        
-        return excluded_html
-
     def _read_html_template(self) -> str:
         """Read HTML template from file"""
         template_path = TEMPLATES_DIR / 'purchase_plan.html'
@@ -284,15 +162,8 @@ class PurchaseOptimizer:
         template = self._read_html_template()
         css_content = self._read_css_template()
         
-        # Generate excluded components count HTML
-        excluded_count_html = ""
-        if self.excluded_components:
-            excluded_count_html = f"""
-        <p style="color: #e74c3c;">Componenti esclusi: {len(self.excluded_components)}</p>"""
-        
-        # Generate orders and excluded components HTML
+        # Generate orders HTML
         orders_html = self._generate_orders_html(orders)
-        excluded_components_html = self._generate_excluded_components_html()
         
         # Fill template with data
         return template.format(
@@ -300,29 +171,26 @@ class PurchaseOptimizer:
             num_components=len(self.required_components),
             execution_time=execution_time,
             minimum_order=self.minimum_order,
-            excluded_components_count=excluded_count_html,
+            excluded_components_count="",
             orders_html=orders_html,
             total_cost=total_cost,
-            excluded_components_html=excluded_components_html
+            excluded_components_html=""
         )
 
     def load_data(self) -> None:
         # Process each product from the input file
         for product_name, quantity in self.products.items():
             try:
-                quantity = int(quantity)  # Ensure quantity is an integer
+                quantity = int(quantity)
             except ValueError:
                 print(f"Error: Invalid quantity for product '{product_name}': {quantity}")
-                print("Quantities must be integers. Please check your input file.")
                 sys.exit(1)
                 
-            # Convert product name to CSV filename
             csv_filename = normalize_product_name(product_name) + '.csv'
             csv_path = self.csv_folder / csv_filename
             
             if not csv_path.exists():
                 print(f"Error: CSV file not found for product: {product_name}")
-                print(f"Expected path: {csv_path}")
                 sys.exit(1)
             
             component_type = csv_path.stem
@@ -359,7 +227,6 @@ class PurchaseOptimizer:
                     self.products_by_vendor[product.vendor].append(product)
                 except (ValueError, KeyError) as e:
                     print(f"Error processing row in {csv_path}: {str(e)}")
-                    print(f"Row data: {row.to_dict()}")
                     sys.exit(1)
             
             if not products:
@@ -367,7 +234,7 @@ class PurchaseOptimizer:
             
             self.products_by_component[component_type] = products
 
-    def find_single_vendor_solution(self) -> Tuple[float, Dict[str, Dict[str, Product]]]:
+    def find_single_vendor_solution(self) -> Tuple[float, Optional[Dict[str, Dict[str, Product]]]]:
         """Try to find a solution using a single vendor for all components"""
         print("\nChecking single-vendor solutions...")
         best_cost = float('inf')
@@ -399,158 +266,132 @@ class PurchaseOptimizer:
                     best_products = vendor_products
         
         if best_vendor:
-            print(f"Found valid single-vendor solution with {best_vendor}")
+            print(f"\nFound single-vendor solution with {best_vendor}:")
+            print_order_table(best_vendor, best_products, max(p.shipping for p in best_products.values()))
+            print(f"Total cost: €{best_cost:.2f}")
             return best_cost, {best_vendor: best_products}
         
         print("No valid single-vendor solution found")
         return float('inf'), None
 
-    def find_optimal_combination(self, components_to_try: Set[str]) -> Tuple[float, Dict]:
-        if not components_to_try:
-            print("Error: No components to optimize.")
-            sys.exit(1)
+    def evaluate_vendor_group(self, vendor_group: List[str], components: Set[str]) -> Tuple[float, Optional[Dict[str, Dict[str, Product]]]]:
+        """Evaluate a group of vendors for the given components"""
+        orders = {}
+        total_cost = 0
+        components_covered = set()
+        
+        # Try to assign components to vendors optimally
+        for component in components:
+            best_cost = float('inf')
+            best_vendor = None
+            best_product = None
             
-        # Get all vendors that can fulfill at least one component
-        vendor_capabilities = {}
-        for vendor in self.products_by_vendor:
-            components = set()
-            total_cost = 0
-            for component in components_to_try:
+            for vendor in vendor_group:
                 vendor_products = [p for p in self.products_by_component[component] if p.vendor == vendor]
                 if vendor_products:
-                    components.add(component)
-                    best_product = get_best_product_for_component(vendor_products)
-                    total_cost += best_product.total_cost
-            if components:
-                avg_cost = total_cost / len(components)
-                vendor_capabilities[vendor] = (len(components), -avg_cost)  # Negative cost for reverse sorting
+                    product = min(vendor_products, key=lambda p: p.total_price)
+                    if product.total_price < best_cost:
+                        best_cost = product.total_price
+                        best_vendor = vendor
+                        best_product = product
+            
+            if best_vendor:
+                if best_vendor not in orders:
+                    orders[best_vendor] = {}
+                orders[best_vendor][component] = best_product
+                components_covered.add(component)
         
-        # Sort vendors by number of components they can fulfill and average cost
-        sorted_vendors = sorted(vendor_capabilities.items(), 
-                              key=lambda x: x[1], 
-                              reverse=True)
-        
-        # Create all possible component-vendor assignments, prioritizing efficient vendors
-        assignments = []
-        for component in components_to_try:
-            component_vendors = []
-            for vendor, _ in sorted_vendors:
-                if any(p.vendor == vendor for p in self.products_by_component[component]):
-                    component_vendors.append((component, vendor))
-            assignments.append(component_vendors)
-        
-        # Generate all possible combinations
-        all_combinations = list(product(*assignments))
-        num_combinations = len(all_combinations)
-        
-        if num_combinations == 0:
+        if components_covered != components:
             return float('inf'), None
             
-        if num_combinations > self.max_combinations:
-            print(f"Warning: Large number of combinations ({num_combinations}). This might take a while...")
-            print("Consider reducing the number of components or vendors if the process is too slow.")
-            all_combinations = all_combinations[:self.max_combinations]
+        # Verify minimum order requirements and calculate total cost
+        valid_orders = {}
+        for vendor, products in orders.items():
+            products_total = sum(p.total_price for p in products.values())
+            if products_total >= self.minimum_order:
+                shipping_cost = max(p.shipping for p in products.values())
+                total_cost += products_total + shipping_cost
+                valid_orders[vendor] = products
+            else:
+                return float('inf'), None
         
-        num_cores = min(mp.cpu_count(), 8)  # Limit max cores to prevent excessive CPU usage
-        chunk_size = max(1, len(all_combinations) // num_cores)
-        chunks = [all_combinations[i:i + chunk_size] for i in range(0, len(all_combinations), chunk_size)]
-        
-        chunk_data = [(chunk, self.products_by_vendor, components_to_try, self.minimum_order) for chunk in chunks]
-        
+        return total_cost, valid_orders if valid_orders else None
+
+    def find_optimal_solution(self) -> Tuple[float, Dict[str, Dict[str, Product]]]:
+        """Find optimal solution by trying different vendor groupings"""
+        print("\nFinding optimal solution...")
         best_cost = float('inf')
         best_orders = None
         
-        try:
-            with mp.Pool(processes=num_cores) as pool:
-                results = []
-                for i, result in enumerate(pool.imap_unordered(evaluate_assignments_chunk, chunk_data)):
-                    results.append(result)
-                    print(f"Progress: {i+1}/{len(chunks)} chunks processed")
-                    
-                    cost, orders = result
-                    if cost and cost < best_cost:
-                        best_cost = cost
-                        best_orders = orders
-                        
-        except TimeoutError:
-            print("Warning: Optimization timed out. Using best result found so far.")
-        except Exception as e:
-            print(f"Error during optimization: {str(e)}")
-            if best_orders is None:
-                sys.exit(1)
+        # Get vendors that can fulfill at least one component
+        capable_vendors = set()
+        for component in self.required_components:
+            for product in self.products_by_component[component]:
+                capable_vendors.add(product.vendor)
+        
+        # Sort vendors by number of components they can fulfill
+        vendor_capabilities = {}
+        for vendor in capable_vendors:
+            components = set()
+            for component in self.required_components:
+                if any(p.vendor == vendor for p in self.products_by_component[component]):
+                    components.add(component)
+            vendor_capabilities[vendor] = len(components)
+        
+        sorted_vendors = sorted(capable_vendors, 
+                              key=lambda v: (-vendor_capabilities[v], 
+                                           min(p.shipping for p in self.products_by_vendor[v])))
+        
+        # Try different numbers of vendors, starting with smaller groups
+        for num_vendors in range(1, len(sorted_vendors) + 1):
+            print(f"Trying combinations of {num_vendors} vendors...")
+            
+            # Generate vendor combinations, prioritizing vendors that can fulfill more components
+            for vendor_group in itertools.combinations(sorted_vendors, num_vendors):
+                cost, orders = self.evaluate_vendor_group(list(vendor_group), self.required_components)
+                if orders and cost < best_cost:
+                    best_cost = cost
+                    best_orders = orders
+                    print(f"Found better solution: €{best_cost:.2f}")
+            
+            # If we found a valid solution, don't try larger vendor groups
+            if best_orders:
+                break
         
         return best_cost, best_orders
 
-    def optimize_with_exclusions(self) -> Tuple[float, Dict]:
-        # First try single-vendor solution
-        single_vendor_cost, single_vendor_orders = self.find_single_vendor_solution()
+    def optimize(self) -> Tuple[float, Dict[str, Dict[str, Product]]]:
+        """Find the optimal purchase plan"""
+        # First try single vendor solution
+        single_cost, single_orders = self.find_single_vendor_solution()
         
         # Then try multi-vendor solution
-        print("\nTrying multi-vendor optimization...")
-        multi_vendor_cost, multi_vendor_orders = self.find_optimal_combination(self.required_components)
+        multi_cost, multi_orders = self.find_optimal_solution()
         
-        # Compare solutions
-        if single_vendor_cost < multi_vendor_cost:
+        # Return the better solution
+        if single_cost < multi_cost:
             print("\nSingle-vendor solution is better!")
-            return single_vendor_cost, single_vendor_orders
-        elif multi_vendor_orders:
+            return single_cost, single_orders
+        else:
             print("\nMulti-vendor solution is better!")
-            return multi_vendor_cost, multi_vendor_orders
-            
-        # If no complete solution found, try removing components
-        components_to_try = self.required_components.copy()
-        best_cost = float('inf')
-        best_orders = None
-        
-        while components_to_try and not best_orders:
-            print(f"\nTrying optimization with {len(components_to_try)} components...")
-            cost, orders = self.find_optimal_combination(components_to_try)
-            if orders:
-                best_cost = cost
-                best_orders = orders
-                break
-            
-            # No solution found, try removing components that are harder to group
-            component_values = {}
-            for comp in components_to_try:
-                vendors = set(p.vendor for p in self.products_by_component[comp])
-                best_product = get_best_product_for_component(self.products_by_component[comp])
-                # Score based on total cost and vendor availability
-                component_values[comp] = best_product.total_cost / len(vendors)
-            
-            component_to_remove = max(component_values.items(), key=lambda x: x[1])[0]
-            components_to_try.remove(component_to_remove)
-            self.excluded_components.add(component_to_remove)
-            print(f"Excluding component: {component_to_remove}")
-        
-        if not best_orders:
-            print("Error: Could not find any valid solution even after excluding components.")
-            sys.exit(1)
-            
-        return best_cost, best_orders
+            return multi_cost, multi_orders
     
     def generate_purchase_plan(self) -> None:
         print("=== Piano di Acquisto Ottimale ===")
-        print(f"Numero di CPU utilizzate: {min(mp.cpu_count(), 8)}")
         print(f"Numero di componenti da acquistare: {len(self.required_components)}")
         print(f"Ordine minimo per venditore: €{self.minimum_order:.2f} (esclusa spedizione)")
         
         start_time = time.time()
         try:
-            total_cost, orders = self.optimize_with_exclusions()
+            total_cost, orders = self.optimize()
             end_time = time.time()
             execution_time = end_time - start_time
             
-            if self.excluded_components:
-                print("\nComponenti esclusi:")
-                for component in sorted(self.excluded_components):
-                    print(f"- {component}")
-                print()
-            
             if orders:
+                print("\nSoluzione finale:")
                 for vendor, products in orders.items():
                     shipping_cost = max(p.shipping for p in products.values())
-                    self._print_order_table(vendor, products, shipping_cost)
+                    print_order_table(vendor, products, shipping_cost)
                 
                 print("=" * 80)
                 print(f"Costo Totale Finale: €{total_cost:>.2f}")
