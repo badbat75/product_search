@@ -32,7 +32,8 @@ class TrovaprezziProcessor:
                  retry_count: int = DEFAULT_RETRY_COUNT, 
                  browser_type: str = 'edge',
                  debug: bool = False,
-                 debug_ai: bool = False):
+                 debug_ai: bool = False,
+                 force: bool = False):
         self.logger = setup_logging(__name__)
         self.client = anthropic.Anthropic(api_key=claude_api_key, max_retries=0)
         self.throttle_delay_sec = float(throttle_delay_sec)
@@ -40,6 +41,7 @@ class TrovaprezziProcessor:
         self.last_api_call_time = None
         self.debug = debug
         self.debug_ai = debug_ai
+        self.force = force
         
         # Use var/data directory for CSV files
         self.csv_dir = VAR_DATA_DIR
@@ -253,10 +255,10 @@ class TrovaprezziProcessor:
     def process_product(self, product_name: str) -> bool:
         """Process a single product search"""
         try:
-            # Check for existing CSV
+            # Check for existing CSV unless force flag is set
             filename = normalize_product_name(product_name)
             csv_path = self.csv_dir / f"{filename}.csv"
-            if csv_path.exists():
+            if csv_path.exists() and not self.force:
                 self.logger.info(f"CSV exists, skipping: {csv_path}")
                 return True
 
@@ -339,6 +341,11 @@ def main():
         action='store_true',
         help='Enable AI response debugging (saves responses to var/debug/ai)'
     )
+    parser.add_argument(
+        '-f', '--force',
+        action='store_true',
+        help='Force overwrite existing CSV files'
+    )
     
     try:
         args = parser.parse_args()
@@ -354,7 +361,8 @@ def main():
             retry_count=int(config.get('RETRY_COUNT', DEFAULT_RETRY_COUNT)),
             browser_type=config.get('BROWSER_TYPE', 'edge'),
             debug=args.debug,
-            debug_ai=args.debug_ai
+            debug_ai=args.debug_ai,
+            force=args.force
         )
         
         if not processor.run(args.input_file):
