@@ -156,7 +156,8 @@ class PurchaseOptimizer:
         """Read CSS template from file"""
         css_path = TEMPLATES_DIR / 'style.css'
         try:
-            return css_path.read_text(encoding='utf-8')
+            css_content = css_path.read_text(encoding='utf-8')
+            return f'<style>\n{css_content}\n</style>'
         except Exception as e:
             print(f"Error reading CSS template: {str(e)}")
             sys.exit(1)
@@ -358,7 +359,21 @@ class PurchaseOptimizer:
                     best_cost = cost
                     best_orders = orders
                     print(f"Found better solution: €{best_cost:.2f}")
+                    # Print the current best solution
+                    print("\nCurrent best solution:")
+                    for vendor, products in orders.items():
+                        shipping_cost = max(p.shipping for p in products.values())
+                        print_order_table(vendor, products, shipping_cost)
         
+        if best_orders:
+            print("\nBest multi-vendor solution found:")
+            for vendor, products in best_orders.items():
+                shipping_cost = max(p.shipping for p in products.values())
+                print_order_table(vendor, products, shipping_cost)
+            print(f"Total cost: €{best_cost:.2f}")
+        else:
+            print("No valid multi-vendor solution found")
+            
         return best_cost, best_orders
 
     def optimize(self) -> Tuple[float, Dict[str, Dict[str, Product]]]:
@@ -373,9 +388,13 @@ class PurchaseOptimizer:
         if single_cost < multi_cost:
             print("\nSingle-vendor solution is better!")
             return single_cost, single_orders
-        else:
+        elif multi_cost < float('inf'):
             print("\nMulti-vendor solution is better!")
             return multi_cost, multi_orders
+        else:
+            print("\nNo valid solution found.")
+            print("\nSuggestion: Try to lower minimum order costs to 0 in search.cfg and see if this solves the problem.")
+            return float('inf'), None
     
     def generate_purchase_plan(self) -> None:
         print("=== Piano di Acquisto Ottimale ===")

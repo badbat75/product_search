@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Piano di Acquisto Ottimale</title>
+    {css_content}
+</head>
+<body>
+    <div class="header">
+        <h1>Piano di Acquisto Ottimale</h1>
+        <p>Componenti da acquistare: {num_components}</p>
+        <p>Ordine minimo per venditore: €{minimum_order:.2f} (esclusa spedizione)</p>
+        <p>Tempo di elaborazione: {execution_time:.2f} secondi</p>
+    </div>
+
+    {orders_html}
+
+    <div class="final-total">
+        <h2>Costo Totale Finale: €{total_cost:.2f}</h2>
+    </div>
+
+    {excluded_components_html}
+</body>
+</html>
