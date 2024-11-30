@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any
 import sys
-from config import SEARCH_CONFIG_PATH
+from lib.config import SEARCH_CONFIG_PATH
 
 def setup_logging(name: str) -> logging.Logger:
     """Initialize logging configuration"""
@@ -89,6 +89,9 @@ def read_products(filename: str) -> Dict[str, int]:
             products = {}
             for line in f:
                 line = line.strip()
+                if not line:  # Skip empty lines
+                    continue
+                    
                 if ',' in line:
                     product_name, quantity = line.split(',')
                     products[product_name.strip()] = int(quantity)
@@ -109,4 +112,3 @@ def read_products(filename: str) -> Dict[str, int]:
     except FileNotFoundError:
         print(f"Error: File '{filename}' not found")
         sys.exit(1)
-    return products
