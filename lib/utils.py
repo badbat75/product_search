@@ -20,7 +20,7 @@ def setup_logging(name: str) -> logging.Logger:
     )
     return logging.getLogger(name)
 
-def read_config(required_keys: list[str] = None) -> Dict[str, Any]:
+def read_config(required_keys=None):
     """Read configuration from search.cfg file
     
     Args:
@@ -44,6 +44,14 @@ def read_config(required_keys: list[str] = None) -> Dict[str, Any]:
                     config[key] = value
                 except ValueError as e:
                     logging.warning(f"Invalid config line: {line} - {str(e)}")
+
+        # Handle browser binary paths
+        browser_binary_paths = {
+            'firefox': config.get('FIREFOX_BINARY_PATH'),
+            'chrome': config.get('CHROME_BINARY_PATH'),
+            'edge': config.get('EDGE_BINARY_PATH')
+        }
+        config['BROWSER_BINARY_PATHS'] = browser_binary_paths
 
         if required_keys:
             missing = [key for key in required_keys if key not in config]

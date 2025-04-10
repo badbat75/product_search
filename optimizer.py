@@ -9,8 +9,8 @@ import sys
 import re
 import shutil
 import itertools
-from utils import read_config, normalize_product_name, read_products
-from config import VAR_DATA_DIR, TEMPLATES_DIR, DEFAULT_MINIMUM_ORDER, DEFAULT_MAX_VENDOR_COMBINATIONS
+from lib.utils import read_config, normalize_product_name, read_products
+from lib.config import VAR_DATA_DIR, TEMPLATES_DIR, DEFAULT_MINIMUM_ORDER, DEFAULT_MAX_VENDOR_COMBINATIONS
 
 @dataclass(frozen=True)
 class Product:
@@ -183,6 +183,8 @@ class PurchaseOptimizer:
         )
 
     def load_data(self) -> None:
+        print(f"Loading data for {len(self.products)} products...")
+        
         # Process each product from the input file
         for product_name, quantity in self.products.items():
             try:
@@ -196,6 +198,7 @@ class PurchaseOptimizer:
             
             if not csv_path.exists():
                 print(f"Error: CSV file not found for product: {product_name}")
+                print(f"Expected path: {csv_path}")
                 sys.exit(1)
             
             component_type = csv_path.stem
@@ -343,6 +346,11 @@ class PurchaseOptimizer:
                     components.add(component)
             vendor_capabilities[vendor] = len(components)
         
+        # Add early termination if we find a good enough solution
+        # Consider a threshold like 10% above the best single vendor solution
+        single_cost, _ = self.find_single_vendor_solution()
+        early_termination_threshold = single_cost * 0.9 if single_cost < float('inf') else None
+        
         sorted_vendors = sorted(capable_vendors, 
                               key=lambda v: (-vendor_capabilities[v], 
                                            min(p.shipping for p in self.products_by_vendor[v])))
@@ -352,18 +360,41 @@ class PurchaseOptimizer:
         for num_vendors in range(1, max_vendors + 1):
             print(f"Trying combinations of {num_vendors} vendors...")
             
+            # Calculate total combinations for progress reporting
+            total_combinations = len(list(itertools.combinations(sorted_vendors, num_vendors)))
+            print(f"Total combinations to evaluate: {total_combinations}")
+            
+            # Variables for progress tracking
+            last_update_time = time.time()
+            i = 0
+            
             # Generate vendor combinations, prioritizing vendors that can fulfill more components
-            for vendor_group in itertools.combinations(sorted_vendors, num_vendors):
+            for i, vendor_group in enumerate(itertools.combinations(sorted_vendors, num_vendors)):
+                current_time = time.time()
+                # Update progress every 1 second on the same line
+                if current_time - last_update_time >= 1:
+                    progress_percent = i/total_combinations*100 if total_combinations > 0 else 100
+                    print(f"\rProgress: {i}/{total_combinations} combinations evaluated ({progress_percent:.1f}%)", end="", flush=True)
+                    last_update_time = current_time
+                
                 cost, orders = self.evaluate_vendor_group(list(vendor_group), self.required_components)
                 if orders and cost < best_cost:
                     best_cost = cost
                     best_orders = orders
-                    print(f"Found better solution: €{best_cost:.2f}")
+                    print(f"\nFound better solution: €{best_cost:.2f}")
                     # Print the current best solution
                     print("\nCurrent best solution:")
                     for vendor, products in orders.items():
                         shipping_cost = max(p.shipping for p in products.values())
                         print_order_table(vendor, products, shipping_cost)
+                    
+                    # Early termination if we found a solution that's good enough
+                    if early_termination_threshold and best_cost <= early_termination_threshold:
+                        print(f"Found solution below threshold (€{early_termination_threshold:.2f}), stopping search.")
+                        return best_cost, best_orders
+            
+            # Print final progress for this vendor count
+            print(f"\rProgress: {total_combinations}/{total_combinations} combinations evaluated (100.0%)")
         
         if best_orders:
             print("\nBest multi-vendor solution found:")
@@ -427,6 +458,12 @@ class PurchaseOptimizer:
                 with open(html_filename, 'w', encoding='utf-8') as f:
                     f.write(html_content)
                 print(f"\nReport HTML generato in '{html_filename}'")
+                
+                # Open the HTML file in the default web browser
+                import webbrowser
+                html_path = os.path.abspath(html_filename)
+                print(f"Apertura del report nel browser predefinito...")
+                webbrowser.open(f'file://{html_path}')
                 
         except KeyboardInterrupt:
             print("\nOptimization interrupted by user.")

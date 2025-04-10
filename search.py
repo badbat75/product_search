@@ -13,6 +13,7 @@ from selenium.common.exceptions import TimeoutException
 from datetime import datetime
 from lib.utils import setup_logging, read_config, read_products, normalize_product_name
 from lib.aisearch import AIProcessor
+from lib.browser import configure_browser_options
 from lib.config import (
     VAR_DATA_DIR, VAR_DEBUG_DIR, VAR_DEBUG_AI_DIR, TEMPLATES_DIR,
     BROWSER_CONFIGS, BROWSER_OPTIONS, BASE_URL, CSV_COLUMNS,
@@ -31,13 +32,15 @@ class TrovaprezziProcessor:
                  browser_type: str = 'edge',
                  debug: bool = False,
                  debug_ai: bool = False,
-                 force: bool = False):
+                 force: bool = False,
+                 config: dict = None):
         self.logger = setup_logging(__name__)
         self.throttle_delay_sec = float(throttle_delay_sec)
         self.retry_count = retry_count
         self.debug = debug
         self.debug_ai = debug_ai
         self.force = force
+        self.config = config or {}
         
         # Use var/data directory for CSV files
         self.csv_dir = VAR_DATA_DIR
@@ -66,10 +69,20 @@ class TrovaprezziProcessor:
             
             options = OptionsClass()
             
+            # Set binary location if specified in config
+            if hasattr(self, 'config') and 'BROWSER_BINARY_PATHS' in self.config:
+                binary_path = self.config['BROWSER_BINARY_PATHS'].get(self.browser_type)
+                if binary_path:
+                    self.logger.info(f"Using custom binary path for {self.browser_type}: {binary_path}")
+                    options.binary_location = binary_path
+
             # Add common browser options
             for option in BROWSER_OPTIONS:
                 options.add_argument(option)
-            
+
+            # Configure browser profile using the browser utility
+            options = configure_browser_options(self.browser_type, options, self.config, self.logger)
+
             driver = DriverClass(options=options)
             driver.set_page_load_timeout(DEFAULT_PAGE_LOAD_TIMEOUT)
             
@@ -228,7 +241,8 @@ def main():
             browser_type=config.get('BROWSER_TYPE', 'edge'),
             debug=args.debug,
             debug_ai=args.debug_ai,
-            force=args.force
+            force=args.force,
+            config=config  # Pass the entire config dictionary
         )
         
         if not processor.run(args.input_file):

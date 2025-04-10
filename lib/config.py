@@ -19,6 +19,13 @@ BROWSER_CONFIGS = {
     'chrome': ('ChromeOptions', 'Chrome')
 }
 
+# Browser binary paths - these can be overridden in search.cfg
+BROWSER_BINARY_PATHS = {
+    'edge': None,
+    'firefox': None,
+    'chrome': None
+}
+
 BROWSER_OPTIONS = [
     '--start-maximized',
     '--disable-popup-blocking',

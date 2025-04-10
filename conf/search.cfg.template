@@ -1,6 +1,27 @@
+# Claude API Key (required)
+CLAUDE_API_KEY=your_api_key_here
+
+# Browser settings
 BROWSER_TYPE=edge
-CLAUDE_API_KEY="anthropic-key"
-THROTTLE_DELAY_SEC=1
+# Options: edge, chrome, firefox
+
+# Browser profile settings (optional)
+# For Firefox, use the profile name (e.g., "e9h04lwt.default-release")
+# FIREFOX_PROFILE=e9h04lwt.default-release
+
+# For Chrome, use the profile name (e.g., "Default" or "Profile 1")
+# CHROME_PROFILE=Default
+
+# For Edge, use the profile name (e.g., "Default" or "Profile 1")
+# EDGE_PROFILE=Default
+
+# Custom browser binary paths (optional)
+# BROWSER_BINARY_PATHS={"firefox": "C:\\Program Files\\Mozilla Firefox\\firefox.exe", "chrome": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "edge": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"}
+
+# Throttle delay in seconds (optional, default: 1.0)
+THROTTLE_DELAY_SEC=1.0
+
+# Number of retries for API calls (optional, default: 3)
 RETRY_COUNT=3
 
 MINIMUM_ORDER=50
