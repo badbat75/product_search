@@ -26,6 +26,7 @@ class AIProcessor:
     def _wait_for_throttle(self):
         """Apply throttling between API calls"""
         if self.last_api_call_time:
+            self.logger.info(f"Waiting {self.throttle_delay_sec} seconds to throttle AI APIs")
             time.sleep(self.throttle_delay_sec)
             self.logger.debug(f"Throttled for {self.throttle_delay_sec}s")
 
@@ -90,6 +91,7 @@ class AIProcessor:
         try:
             if retry_count == 0:
                 self._wait_for_throttle()
+                self.logger.info(f"Searching for: {product_name}")
             
             message = self.client.messages.create(
                 model="claude-3-haiku-20240307",
@@ -144,7 +146,9 @@ class AIProcessor:
             attempt = retry_count + 2
             self.logger.warning(f"Rate limit error (429) - Attempt {attempt}/{self.retry_count + 1}")
             if retry_count < self.retry_count:
+                self.logger.info(f"Waiting {self.throttle_delay_sec} seconds to throttle AI APIs")
                 time.sleep(self.throttle_delay_sec)  # Double delay on retry
+                self.logger.info(f"Searching for: {product_name}")
                 return self.process_html(html_content, product_name, base_url, retry_count + 1)
             self.logger.error("Max retries exceeded for rate limiting")
             raise

@@ -143,7 +143,6 @@ class TrovaprezziProcessor:
 
             # Prepare search
             search_url = f"{BASE_URL}/categoria.aspx?id=-1&libera={urllib.parse.quote(product_name)}"
-            self.logger.info(f"Searching: {product_name}")
             
             # Visit homepage first
             self.driver.get(BASE_URL)
@@ -166,6 +165,7 @@ class TrovaprezziProcessor:
                 debug_file = VAR_DEBUG_DIR / 'debug_last_page.html'
                 debug_file.write_text(html_content, encoding='utf-8')
             
+            # Remove the duplicate "Searching for" message from here
             data = self.ai_processor.process_html(html_content, product_name, BASE_URL)
             
             if data:

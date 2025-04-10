@@ -281,7 +281,8 @@ def configure_firefox_options(options, config=None, logger=None):
     try:
         profile_path = get_firefox_profile_path(logger, config)
         if profile_path:
-            logger.info(f"Using Firefox profile: {profile_path}")
+            # Remove this redundant log message since get_firefox_profile_path() already logs it
+            # logger.info(f"Using Firefox profile: {profile_path}")
             options.profile = profile_path
         return options
     except Exception as e:

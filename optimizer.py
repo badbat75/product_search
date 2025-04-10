@@ -364,18 +364,37 @@ class PurchaseOptimizer:
             total_combinations = len(list(itertools.combinations(sorted_vendors, num_vendors)))
             print(f"Total combinations to evaluate: {total_combinations}")
             
-            # Variables for progress tracking
-            last_update_time = time.time()
-            i = 0
+            # Use a proper progress bar if available
+            try:
+                from tqdm import tqdm
+                progress_bar = tqdm(total=total_combinations, desc=f"Evaluating {num_vendors} vendors")
+                use_tqdm = True
+            except ImportError:
+                use_tqdm = False
+                last_update_time = time.time()
+                i = 0
             
             # Generate vendor combinations, prioritizing vendors that can fulfill more components
             for i, vendor_group in enumerate(itertools.combinations(sorted_vendors, num_vendors)):
-                current_time = time.time()
-                # Update progress every 1 second on the same line
-                if current_time - last_update_time >= 1:
-                    progress_percent = i/total_combinations*100 if total_combinations > 0 else 100
-                    print(f"\rProgress: {i}/{total_combinations} combinations evaluated ({progress_percent:.1f}%)", end="", flush=True)
-                    last_update_time = current_time
+                if use_tqdm:
+                    progress_bar.update(1)
+                else:
+                    current_time = time.time()
+                    # Update progress every 1 second on the same line
+                    if current_time - last_update_time >= 1:
+                        progress_percent = i/total_combinations*100 if total_combinations > 0 else 100
+                        print(f"\rProgress: {i}/{total_combinations} combinations evaluated ({progress_percent:.1f}%)", end="", flush=True)
+                        last_update_time = current_time
+                
+                # Skip vendor groups that can't cover all components (early pruning)
+                covered_components = set()
+                for vendor in vendor_group:
+                    for component in self.required_components:
+                        if any(p.vendor == vendor for p in self.products_by_component[component]):
+                            covered_components.add(component)
+                
+                if covered_components != self.required_components:
+                    continue
                 
                 cost, orders = self.evaluate_vendor_group(list(vendor_group), self.required_components)
                 if orders and cost < best_cost:
@@ -391,10 +410,15 @@ class PurchaseOptimizer:
                     # Early termination if we found a solution that's good enough
                     if early_termination_threshold and best_cost <= early_termination_threshold:
                         print(f"Found solution below threshold (€{early_termination_threshold:.2f}), stopping search.")
+                        if use_tqdm:
+                            progress_bar.close()
                         return best_cost, best_orders
             
-            # Print final progress for this vendor count
-            print(f"\rProgress: {total_combinations}/{total_combinations} combinations evaluated (100.0%)")
+            if use_tqdm:
+                progress_bar.close()
+            else:
+                # Print final progress for this vendor count
+                print(f"\rProgress: {total_combinations}/{total_combinations} combinations evaluated (100.0%)")
         
         if best_orders:
             print("\nBest multi-vendor solution found:")
