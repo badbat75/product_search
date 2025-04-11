@@ -68,25 +68,25 @@ class AIProcessor:
 
     def process_html(self, html_content: str, product_name: str, base_url: str, retry_count: int = 0) -> List[List[str]]:
         """Process HTML content with Claude and get structured data"""
-        prompt = """Estrai dati prodotti da TrovaPrezzi.it nel seguente formato:
-    nome_prodotto|prezzo|spese|venditore|link
+        prompt = """Estrai i dati dei prodotti da TrovaPrezzi.it in formato CSV con | come separatore.
 
-    Regole importanti:
-    1. Per nome_prodotto: Estrai il nome completo del prodotto con tutte le specifiche tecniche, NON il nome del venditore
-    2. Per prezzo: 
-       - Estrai SOLO il numero (es: se vedi "123,45 €" scrivi "123,45")
-       - Rimuovi il simbolo € e qualsiasi altro testo
-       - Usa la virgola come separatore decimale
-    3. Per spese: 
-       - Se spedizione gratuita/gratis: scrivi "0"
-       - Altrimenti: estrai SOLO il numero come per il prezzo (es: se vedi "5,90 €" scrivi "5,90")
-    4. Per venditore: Nome del negozio/venditore
-    5. Per link: URL completo del venditore
+Formato richiesto:
+nome_prodotto|prezzo|spese|venditore|link
 
-    Stampa in formato CSV con | come separatore. Non includere intestazioni.
-    NON includere il simbolo € o altro testo nei campi numerici.
+Regole:
+- nome_prodotto: Nome completo del prodotto con specifiche tecniche (NON il nome del venditore)
+- prezzo: Solo il valore numerico (123,45 non €123,45)
+- spese: Solo il valore numerico (5,90 non €5,90), usa 0 per spedizione gratuita
+- venditore: Nome del negozio
+- link: URL completo
 
-    HTML:"""
+Esempio di output corretto:
+Samsung Galaxy S23 Ultra 8GB 256GB Nero|899,00|0|MediaWorld|https://www.trovaprezzi.it/mediaworld
+iPhone 15 Pro 256GB Titanio|1099,00|4,99|Unieuro|https://www.trovaprezzi.it/unieuro
+
+Non includere intestazioni o simboli di valuta. Estrai solo i dati richiesti.
+
+HTML:"""
         
         try:
             if retry_count == 0:

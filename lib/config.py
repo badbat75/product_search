@@ -45,6 +45,15 @@ DEFAULT_CAPTCHA_TIMEOUT = 300
 # Order configuration
 DEFAULT_MINIMUM_ORDER = 50.0  # Default minimum order value in euros
 DEFAULT_MAX_VENDOR_COMBINATIONS = 4  # Default maximum number of vendors to combine
+DEFAULT_MAX_COMBINATIONS = 1000000  # Default maximum number of combinations to evaluate
+
+# Function to get configuration with defaults
+def get_config_value(config, key, default_value):
+    """Get configuration value with default fallback"""
+    try:
+        return type(default_value)(config[key])
+    except (KeyError, ValueError):
+        return default_value
 
 # Create necessary directories
 VAR_DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -26,3 +26,6 @@ RETRY_COUNT=3
 
 MINIMUM_ORDER=50
 MAX_VENDOR_COMBINATIONS=4
+
+# Maximum number of combinations to consider
+MAX_COMBINATIONS=1000000
