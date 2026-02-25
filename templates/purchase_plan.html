@@ -10,7 +10,8 @@
     <div class="header">
         <h1>Piano di Acquisto Ottimale</h1>
         <p>Componenti da acquistare: {num_components}</p>
-        <p>Ordine minimo per venditore: €{minimum_order:.2f} (esclusa spedizione)</p>
+        <p>Ordine minimo default: €{minimum_order:.2f} (esclusa spedizione)</p>
+        {vendor_minimum_orders_html}
         <p>Tempo di elaborazione: {execution_time:.2f} secondi</p>
     </div>
 

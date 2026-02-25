@@ -87,6 +87,28 @@ class PurchaseOptimizer:
             self.max_vendor_combinations = int(self.config['MAX_VENDOR_COMBINATIONS'])
         except (KeyError, ValueError):
             self.max_vendor_combinations = DEFAULT_MAX_VENDOR_COMBINATIONS
+        self.vendor_minimum_orders = self._parse_vendor_minimum_orders()
+
+    def _parse_vendor_minimum_orders(self) -> Dict[str, float]:
+        """Parse per-vendor minimum order overrides from config"""
+        vendor_mins = {}
+        raw = self.config.get('VENDOR_MINIMUM_ORDERS', '').strip()
+        if not raw:
+            return vendor_mins
+        for entry in raw.split(','):
+            entry = entry.strip()
+            if ':' not in entry:
+                continue
+            vendor_name, amount_str = entry.rsplit(':', 1)
+            try:
+                vendor_mins[vendor_name.strip()] = float(amount_str.strip())
+            except ValueError:
+                print(f"Warning: Invalid vendor minimum order entry: {entry}")
+        return vendor_mins
+
+    def get_minimum_order(self, vendor: str) -> float:
+        """Get the minimum order for a specific vendor"""
+        return self.vendor_minimum_orders.get(vendor, self.minimum_order)
 
     def _generate_orders_html(self, orders: Dict) -> str:
         """Generate HTML for orders section"""
@@ -160,16 +182,23 @@ class PurchaseOptimizer:
         """Generate HTML content using template"""
         template = self._read_html_template()
         css_content = self._read_css_template()
-        
+
         # Generate orders HTML
         orders_html = self._generate_orders_html(orders)
-        
+
+        # Generate per-vendor minimum orders HTML
+        vendor_min_html = ""
+        if self.vendor_minimum_orders:
+            for vendor, min_order in sorted(self.vendor_minimum_orders.items()):
+                vendor_min_html += f"<p>Ordine minimo per {vendor}: €{min_order:.2f}</p>\n        "
+
         # Fill template with data
         return template.format(
             css_content=css_content,
             num_components=len(self.required_components),
             execution_time=execution_time,
             minimum_order=self.minimum_order,
+            vendor_minimum_orders_html=vendor_min_html,
             excluded_components_count="",
             orders_html=orders_html,
             total_cost=total_cost,
@@ -331,20 +360,22 @@ class PurchaseOptimizer:
             failing_vendors = []
             for vendor, products in orders.items():
                 vendor_total = sum(p.total_price for p in products.values())
-                if vendor_total < self.minimum_order:
-                    failing_vendors.append((vendor, vendor_total))
+                vendor_min = self.get_minimum_order(vendor)
+                if vendor_total < vendor_min:
+                    failing_vendors.append((vendor, vendor_total, vendor_min))
 
             if not failing_vendors:
                 break
 
             repaired = False
-            for failing_vendor, failing_total in failing_vendors:
+            for failing_vendor, failing_total, failing_min in failing_vendors:
                 best_swap = None  # (component, donor_vendor, cost_delta)
 
                 for donor_vendor, donor_products in orders.items():
                     if donor_vendor == failing_vendor:
                         continue
                     donor_total = sum(p.total_price for p in donor_products.values())
+                    donor_min = self.get_minimum_order(donor_vendor)
 
                     for component in list(donor_products.keys()):
                         key = (component, failing_vendor)
@@ -358,10 +389,10 @@ class PurchaseOptimizer:
 
                         # Donor becomes empty — ok if failing vendor gets enough
                         if len(donor_products) <= 1:
-                            if new_failing_total < self.minimum_order:
+                            if new_failing_total < failing_min:
                                 continue
                         else:
-                            if new_donor_total < self.minimum_order:
+                            if new_donor_total < donor_min:
                                 continue
 
                         cost_delta = replacement.total_cost - donor_product.total_cost
@@ -384,7 +415,8 @@ class PurchaseOptimizer:
         total_cost = 0.0
         for vendor, products in orders.items():
             products_total = sum(p.total_price for p in products.values())
-            if products_total < self.minimum_order:
+            vendor_min = self.get_minimum_order(vendor)
+            if products_total < vendor_min:
                 return float('inf'), None
             shipping_cost = max(p.shipping for p in products.values())
             total_cost += products_total + shipping_cost
@@ -475,7 +507,10 @@ class PurchaseOptimizer:
     def generate_purchase_plan(self) -> None:
         print("=== Piano di Acquisto Ottimale ===")
         print(f"Numero di componenti da acquistare: {len(self.required_components)}")
-        print(f"Ordine minimo per venditore: €{self.minimum_order:.2f} (esclusa spedizione)")
+        print(f"Ordine minimo default: €{self.minimum_order:.2f} (esclusa spedizione)")
+        if self.vendor_minimum_orders:
+            for vendor, min_order in sorted(self.vendor_minimum_orders.items()):
+                print(f"  Ordine minimo per {vendor}: €{min_order:.2f}")
         print(f"Numero massimo di venditori da combinare: {self.max_vendor_combinations}")
         
         start_time = time.time()

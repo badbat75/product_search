@@ -12,7 +12,7 @@ The optimizer (`optimizer.py`) finds the cheapest way to purchase a set of requi
 
 **Constraints:**
 - Every required component must be purchased from exactly one vendor
-- Each vendor's product total (excluding shipping) must meet the `MINIMUM_ORDER` threshold (default: €50)
+- Each vendor's product total (excluding shipping) must meet its minimum order threshold (per-vendor override or global `MINIMUM_ORDER` default, €50)
 - At most `MAX_VENDOR_COMBINATIONS` vendors can be used (default: 4)
 
 **Cost model:**
@@ -75,10 +75,10 @@ This produces the cheapest possible assignment when ignoring minimum order const
 
 After greedy assignment, some vendors may fall below the minimum order threshold. The repair loop attempts to fix this:
 
-1. Identify vendors whose product total < `MINIMUM_ORDER`
+1. Identify vendors whose product total < their minimum order (per-vendor or global default)
 2. For each failing vendor, search for a component that can be reassigned **from** another vendor **to** the failing one:
    - The failing vendor must be able to supply that component
-   - The donor vendor must still meet minimum order after losing the component (or become empty and be removed)
+   - The donor vendor must still meet its own minimum order after losing the component (or become empty and be removed)
    - Among all valid swaps, pick the one with the smallest cost increase
 3. Execute the best swap found
 4. Repeat until no vendors are failing or no more repairs are possible
@@ -128,5 +128,6 @@ Set in `conf/search.cfg`:
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `MINIMUM_ORDER` | 50.0 | Minimum product total per vendor (€). Set to 0 to disable. |
+| `MINIMUM_ORDER` | 50.0 | Default minimum product total per vendor (€). Set to 0 to disable. |
 | `MAX_VENDOR_COMBINATIONS` | 4 | Maximum vendors in a solution. Higher = slower but potentially cheaper. |
+| `VENDOR_MINIMUM_ORDERS` | *(empty)* | Per-vendor minimum order overrides, comma-separated `vendor:amount` pairs. Vendors not listed use `MINIMUM_ORDER`. Example: `Zfarmacia:30,Dr. Max:25` |

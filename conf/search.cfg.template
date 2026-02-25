@@ -5,3 +5,8 @@ RETRY_COUNT=3
 
 MINIMUM_ORDER=50
 MAX_VENDOR_COMBINATIONS=4
+
+# Per-vendor minimum order overrides (comma-separated, vendor_name:amount)
+# Vendors not listed here will use MINIMUM_ORDER as default
+# Example: VENDOR_MINIMUM_ORDERS=Farmacia Loreto:30,Dr. Max:25
+VENDOR_MINIMUM_ORDERS=
