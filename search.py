@@ -1,5 +1,4 @@
 import time
-import urllib.parse
 from pathlib import Path
 from typing import List, Optional
 import csv
@@ -7,12 +6,13 @@ import argparse
 import sys
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from datetime import datetime
 from lib.utils import setup_logging, read_config, read_products, normalize_product_name
-from lib.aisearch import AIProcessor
+from lib.htmlparser import HtmlProcessor
 from lib.config import (
     VAR_DATA_DIR, VAR_DEBUG_DIR, VAR_DEBUG_AI_DIR, TEMPLATES_DIR,
     BROWSER_CONFIGS, BROWSER_OPTIONS, BASE_URL, CSV_COLUMNS,
@@ -23,34 +23,40 @@ from lib.config import (
 class TrovaprezziProcessor:
     """Processor for scraping Trovaprezzi.it and processing with Claude"""
     
-    def __init__(self, 
-                 claude_api_key: str, 
-                 throttle_delay_sec: float = DEFAULT_THROTTLE_DELAY, 
-                 output_dir: str = None, 
-                 retry_count: int = DEFAULT_RETRY_COUNT, 
+    def __init__(self,
+                 throttle_delay_sec: float = DEFAULT_THROTTLE_DELAY,
+                 output_dir: str = None,
+                 retry_count: int = DEFAULT_RETRY_COUNT,
                  browser_type: str = 'edge',
                  debug: bool = False,
                  debug_ai: bool = False,
-                 force: bool = False):
+                 force: bool = False,
+                 use_ai: bool = False,
+                 claude_api_key: str = None):
         self.logger = setup_logging(__name__)
         self.throttle_delay_sec = float(throttle_delay_sec)
         self.retry_count = retry_count
         self.debug = debug
         self.debug_ai = debug_ai
         self.force = force
-        
+        self.use_ai = use_ai
+
         # Use var/data directory for CSV files
         self.csv_dir = VAR_DATA_DIR
-        
-        # Initialize AI processor
-        self.ai_processor = AIProcessor(
-            claude_api_key=claude_api_key,
-            throttle_delay_sec=throttle_delay_sec,
-            retry_count=retry_count,
-            debug_ai=debug_ai,
-            ai_responses_dir=VAR_DEBUG_AI_DIR if debug_ai else None
-        )
-        
+
+        # Initialize processor
+        if use_ai:
+            from lib.aisearch import AIProcessor
+            self.processor = AIProcessor(
+                claude_api_key=claude_api_key,
+                throttle_delay_sec=throttle_delay_sec,
+                retry_count=retry_count,
+                debug_ai=debug_ai,
+                ai_responses_dir=VAR_DEBUG_AI_DIR if debug_ai else None
+            )
+        else:
+            self.processor = HtmlProcessor()
+
         self.browser_type = browser_type.lower()
         self.driver = self._init_browser()
 
@@ -65,13 +71,23 @@ class TrovaprezziProcessor:
             DriverClass = getattr(webdriver, driver_name)
             
             options = OptionsClass()
-            
+
             # Add common browser options
             for option in BROWSER_OPTIONS:
                 options.add_argument(option)
-            
+
+            # Anti-detection: hide Selenium/automation fingerprint
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_experimental_option('excludeSwitches', ['enable-automation'])
+            options.add_experimental_option('useAutomationExtension', False)
+
             driver = DriverClass(options=options)
             driver.set_page_load_timeout(DEFAULT_PAGE_LOAD_TIMEOUT)
+
+            # Remove navigator.webdriver flag
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
+            })
             
             self.logger.info(f"Browser {self.browser_type} initialized successfully")
             return driver
@@ -80,22 +96,65 @@ class TrovaprezziProcessor:
             self.logger.error(f"Browser initialization error: {str(e)}")
             raise
 
-    def handle_captcha(self) -> bool:
-        """Handle CAPTCHA presence"""
-        try:
-            if "captcha" not in self.driver.current_url.lower():
-                return False
-                
-            self.logger.info("CAPTCHA detected, waiting for human input...")
-            WebDriverWait(self.driver, DEFAULT_CAPTCHA_TIMEOUT).until(
-                lambda driver: "captcha" not in driver.current_url.lower()
-            )
-            self.logger.info("CAPTCHA resolved")
+    def _is_captcha_present(self) -> bool:
+        """Detect CAPTCHA by checking URL and visible page elements"""
+        url = self.driver.current_url.lower()
+        if "captcha" in url or "challenge" in url:
             return True
-            
-        except TimeoutException:
+
+        # Check for visible CAPTCHA elements
+        captcha_selectors = [
+            "iframe[src*='captcha-delivery.com']",
+            "iframe[src*='geo.captcha-delivery.com']",
+            "iframe[title*='DataDome']",
+            "iframe[src*='recaptcha']",
+            "iframe[src*='hcaptcha']",
+            ".g-recaptcha",
+            ".h-captcha",
+            "#cf-challenge-running",
+            "iframe[src*='turnstile']",
+        ]
+        for selector in captcha_selectors:
+            try:
+                el = self.driver.find_element(By.CSS_SELECTOR, selector)
+                if el.is_displayed():
+                    return True
+            except Exception:
+                continue
+
+        # DataDome: full-page captcha with script from captcha-delivery.com
+        try:
+            page = self.driver.page_source
+            if "captcha-delivery.com" in page and "<iframe" in page.lower():
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def handle_captcha(self) -> bool:
+        """Handle CAPTCHA presence - waits for user to solve it manually"""
+        try:
+            if self.debug:
+                debug_file = VAR_DEBUG_DIR / 'debug_captcha_check.html'
+                debug_file.write_text(self.driver.page_source, encoding='utf-8')
+                self.logger.debug(f"Captcha check - URL: {self.driver.current_url}")
+
+            if not self._is_captcha_present():
+                return False
+
+            self.logger.info("CAPTCHA detected! Please solve it in the browser...")
+
+            start = time.time()
+            while time.time() - start < DEFAULT_CAPTCHA_TIMEOUT:
+                time.sleep(2)
+                if not self._is_captcha_present():
+                    self.logger.info("CAPTCHA resolved")
+                    return True
+
             self.logger.error("CAPTCHA resolution timeout")
             return False
+
         except Exception as e:
             self.logger.error(f"CAPTCHA handling error: {str(e)}")
             return False
@@ -118,6 +177,26 @@ class TrovaprezziProcessor:
             self.logger.error(f"CSV save error: {str(e)}")
             return None
 
+    def _find_search_box(self):
+        """Find the search input on the page"""
+        selectors = [
+            (By.NAME, "libera"),
+            (By.ID, "search"),
+            (By.CSS_SELECTOR, "input[type='search']"),
+            (By.CSS_SELECTOR, "input.search"),
+            (By.CSS_SELECTOR, "input[placeholder*='cerca' i]"),
+            (By.CSS_SELECTOR, "input[placeholder*='search' i]"),
+            (By.CSS_SELECTOR, "form[role='search'] input"),
+        ]
+        for by, selector in selectors:
+            try:
+                el = self.driver.find_element(by, selector)
+                if el.is_displayed():
+                    return el
+            except Exception:
+                continue
+        return None
+
     def process_product(self, product_name: str) -> bool:
         """Process a single product search"""
         try:
@@ -128,21 +207,33 @@ class TrovaprezziProcessor:
                 self.logger.info(f"CSV exists, skipping: {csv_path}")
                 return True
 
-            # Prepare search
-            search_url = f"{BASE_URL}/categoria.aspx?id=-1&libera={urllib.parse.quote(product_name)}"
             self.logger.info(f"Searching: {product_name}")
-            
-            # Visit homepage first
+
+            # Navigate to homepage
             self.driver.get(BASE_URL)
-            
-            # Search page
-            self.driver.get(search_url)
-            
-            # Handle CAPTCHA if needed
-            if self.handle_captcha():
-                self.driver.get(search_url)
-            
-            # Wait for page load
+
+            # Handle CAPTCHA if it appears on homepage
+            self.handle_captcha()
+
+            # Wait for homepage and find search box
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+
+            search_box = self._find_search_box()
+            if not search_box:
+                self.logger.error("Could not find search box on homepage")
+                return False
+
+            # Type the search query and submit
+            search_box.clear()
+            search_box.send_keys(product_name)
+            search_box.send_keys(Keys.RETURN)
+
+            # Handle CAPTCHA if it appears after search
+            self.handle_captcha()
+
+            # Wait for results page
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
@@ -153,7 +244,7 @@ class TrovaprezziProcessor:
                 debug_file = VAR_DEBUG_DIR / 'debug_last_page.html'
                 debug_file.write_text(html_content, encoding='utf-8')
             
-            data = self.ai_processor.process_html(html_content, product_name, BASE_URL)
+            data = self.processor.process_html(html_content, product_name, BASE_URL)
             
             if data:
                 return bool(self.save_to_csv(data, product_name))
@@ -212,23 +303,33 @@ def main():
         action='store_true',
         help='Force overwrite existing CSV files'
     )
-    
+    parser.add_argument(
+        '--ai',
+        action='store_true',
+        help='Use Claude AI for HTML extraction instead of HTML parser'
+    )
+
     try:
         args = parser.parse_args()
-        config = read_config(['CLAUDE_API_KEY', 'THROTTLE_DELAY_SEC', 'RETRY_COUNT', 'BROWSER_TYPE'])
-        
+
+        required_keys = ['THROTTLE_DELAY_SEC', 'RETRY_COUNT', 'BROWSER_TYPE']
+        if args.ai:
+            required_keys.append('CLAUDE_API_KEY')
+        config = read_config(required_keys)
+
         # Use file stem (name without extension) for output directory
         output_dir = Path(args.input_file).stem
-        
+
         processor = TrovaprezziProcessor(
-            claude_api_key=config['CLAUDE_API_KEY'],
             throttle_delay_sec=float(config.get('THROTTLE_DELAY_SEC', DEFAULT_THROTTLE_DELAY)),
             output_dir=output_dir,
             retry_count=int(config.get('RETRY_COUNT', DEFAULT_RETRY_COUNT)),
             browser_type=config.get('BROWSER_TYPE', 'edge'),
             debug=args.debug,
             debug_ai=args.debug_ai,
-            force=args.force
+            force=args.force,
+            use_ai=args.ai,
+            claude_api_key=config.get('CLAUDE_API_KEY'),
         )
         
         if not processor.run(args.input_file):
