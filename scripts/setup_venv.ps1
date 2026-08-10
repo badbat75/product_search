@@ -21,7 +21,7 @@ $ActivateScript = Join-Path $VenvDir "Scripts" "Activate.ps1"
 python -m pip install --upgrade pip
 
 # Install dependencies
-python -m pip install selenium anthropic pandas
+python -m pip install selenium anthropic pandas pulp
 
 # Copy config template if config doesn't exist
 $ConfigFile = Join-Path $ProjectDir "conf" "search.cfg"

@@ -8,7 +8,7 @@ import time
 import sys
 import re
 import shutil
-import itertools
+import pulp
 from lib.utils import read_config, normalize_product_name, read_products
 from lib.config import VAR_DATA_DIR, TEMPLATES_DIR, DEFAULT_MINIMUM_ORDER, DEFAULT_MAX_VENDOR_COMBINATIONS
 
@@ -73,7 +73,6 @@ class PurchaseOptimizer:
         self.input_file = input_file
         self.csv_folder = VAR_DATA_DIR
         self.products_by_component: Dict[str, List[Product]] = {}
-        self.products_by_vendor: Dict[str, List[Product]] = {}
         self.required_components: Set[str] = set()
         self.excluded_components: Set[str] = set()
         self.project_name = Path(input_file).stem
@@ -249,244 +248,102 @@ class PurchaseOptimizer:
                         quantity=quantity
                     )
                     products.append(product)
-                    
-                    if product.vendor not in self.products_by_vendor:
-                        self.products_by_vendor[product.vendor] = []
-                    self.products_by_vendor[product.vendor].append(product)
                 except (ValueError, KeyError) as e:
                     print(f"Error processing row in {csv_path}: {str(e)}")
                     sys.exit(1)
             
             if not products:
                 print(f"Warning: No valid products found in {csv_path}")
-            
+
             self.products_by_component[component_type] = products
 
-        self._prepare_lookups()
+    def find_optimal_solution(self) -> Tuple[float, Optional[Dict[str, Dict[str, Product]]]]:
+        """Find the optimal purchase plan by solving a mixed-integer linear program.
 
-    def _prepare_lookups(self) -> None:
-        """Pre-compute lookup tables for efficient optimization"""
-        # (component, vendor) -> cheapest Product by total_cost
-        self.best_product_lookup: Dict[Tuple[str, str], Product] = {}
-        for component, products in self.products_by_component.items():
-            for p in products:
-                key = (component, p.vendor)
-                if key not in self.best_product_lookup or p.total_cost < self.best_product_lookup[key].total_cost:
-                    self.best_product_lookup[key] = p
+        Model (solved exactly by CBC):
+            x[p] ∈ {0,1}   offer p is purchased
+            y[v] ∈ {0,1}   vendor v is used
+            s[v] ≥ 0       shipping charged by vendor v
 
-        # vendor -> set of components they carry
-        self.vendor_coverage: Dict[str, Set[str]] = {}
-        for (component, vendor) in self.best_product_lookup:
-            if vendor not in self.vendor_coverage:
-                self.vendor_coverage[vendor] = set()
-            self.vendor_coverage[vendor].add(component)
+            minimize    Σ total_price(p)·x[p] + Σ s[v]
+            subject to  Σ x[p] = 1                 over offers of each component
+                        x[p] ≤ y[vendor(p)]
+                        s[v] ≥ shipping(p)·x[p]    for each offer p of vendor v
+                        Σ total_price(p)·x[p] ≥ minimum_order(v)·y[v]   per vendor
+                        Σ y[v] ≤ max_vendor_combinations
+        """
+        print("\nFinding optimal solution...")
 
-        # component -> absolute cheapest total_cost across all vendors
-        self.cheapest_per_component: Dict[str, float] = {}
-        for component in self.required_components:
-            self.cheapest_per_component[component] = min(
-                self.best_product_lookup[(component, v)].total_cost
-                for v in self.vendor_coverage
-                if (component, v) in self.best_product_lookup
-            )
-        self.absolute_lower_bound = sum(self.cheapest_per_component.values())
+        missing = sorted(c for c in self.required_components if not self.products_by_component.get(c))
+        if missing:
+            print(f"No offers available for: {', '.join(missing)}")
+            return float('inf'), None
 
-        # Vendors sorted by coverage desc, min shipping asc
-        self.capable_vendors = sorted(
-            self.vendor_coverage.keys(),
-            key=lambda v: (
-                -len(self.vendor_coverage[v]),
-                min(self.best_product_lookup[(c, v)].shipping for c in self.vendor_coverage[v])
-            )
+        # Flat list of all offers; index into it is the x-variable key
+        offers: List[Tuple[str, Product]] = [
+            (component, product)
+            for component, products in sorted(self.products_by_component.items())
+            for product in products
+        ]
+        vendors = sorted({product.vendor for _, product in offers})
+        vendor_index = {vendor: j for j, vendor in enumerate(vendors)}
+        print(f"Solving MILP: {len(offers)} offers, {len(vendors)} vendors, {len(self.required_components)} components")
+
+        prob = pulp.LpProblem("purchase_plan", pulp.LpMinimize)
+        x = [pulp.LpVariable(f"x_{i}", cat="Binary") for i in range(len(offers))]
+        y = [pulp.LpVariable(f"y_{j}", cat="Binary") for j in range(len(vendors))]
+        s = [pulp.LpVariable(f"s_{j}", lowBound=0) for j in range(len(vendors))]
+
+        prob += (
+            pulp.lpSum(product.total_price * x[i] for i, (_, product) in enumerate(offers))
+            + pulp.lpSum(s)
         )
 
-        # Filter out dominated vendors
-        self._filter_dominated_vendors()
+        offers_by_component: Dict[str, List[int]] = {}
+        offers_by_vendor: Dict[str, List[int]] = {}
+        for i, (component, product) in enumerate(offers):
+            offers_by_component.setdefault(component, []).append(i)
+            offers_by_vendor.setdefault(product.vendor, []).append(i)
 
-    def _filter_dominated_vendors(self) -> None:
-        """Remove vendors strictly dominated by another vendor (same or worse on all components)"""
-        non_dominated = []
-        for v in self.capable_vendors:
-            dominated = False
-            for other in self.capable_vendors:
-                if other == v:
-                    continue
-                if self.vendor_coverage[v].issubset(self.vendor_coverage[other]):
-                    all_cheaper = all(
-                        self.best_product_lookup[(c, other)].total_cost <= self.best_product_lookup[(c, v)].total_cost
-                        for c in self.vendor_coverage[v]
-                    )
-                    if all_cheaper:
-                        dominated = True
-                        break
-            if not dominated:
-                non_dominated.append(v)
+        # Exactly one offer per required component
+        for component, indices in offers_by_component.items():
+            prob += pulp.lpSum(x[i] for i in indices) == 1
 
-        # Only use filtered list if it can still cover all components
-        filtered_coverage = set()
-        for v in non_dominated:
-            filtered_coverage |= self.vendor_coverage[v]
-        if self.required_components.issubset(filtered_coverage):
-            self.capable_vendors = non_dominated
+        for vendor, indices in offers_by_vendor.items():
+            j = vendor_index[vendor]
+            for i in indices:
+                # Buying an offer marks its vendor as used and sets the
+                # order's shipping to the max over the chosen offers
+                prob += x[i] <= y[j]
+                prob += s[j] >= offers[i][1].shipping * x[i]
 
-    def evaluate_vendor_group(self, vendor_group: List[str], components: Set[str]) -> Tuple[float, Optional[Dict[str, Dict[str, Product]]]]:
-        """Evaluate a group of vendors for the given components"""
-        orders: Dict[str, Dict[str, Product]] = {}
-
-        # Phase 1: Greedy assignment using pre-computed lookups
-        for component in components:
-            best_cost = float('inf')
-            best_vendor = None
-            best_product = None
-
-            for vendor in vendor_group:
-                key = (component, vendor)
-                if key in self.best_product_lookup:
-                    product = self.best_product_lookup[key]
-                    if product.total_cost < best_cost:
-                        best_cost = product.total_cost
-                        best_vendor = vendor
-                        best_product = product
-
-            if best_vendor is None:
-                return float('inf'), None
-
-            if best_vendor not in orders:
-                orders[best_vendor] = {}
-            orders[best_vendor][component] = best_product
-
-        # Phase 2: Repair minimum order violations
-        for _ in range(len(components)):
-            failing_vendors = []
-            for vendor, products in orders.items():
-                vendor_total = sum(p.total_price for p in products.values())
-                vendor_min = self.get_minimum_order(vendor)
-                if vendor_total < vendor_min:
-                    failing_vendors.append((vendor, vendor_total, vendor_min))
-
-            if not failing_vendors:
-                break
-
-            repaired = False
-            for failing_vendor, failing_total, failing_min in failing_vendors:
-                best_swap = None  # (component, donor_vendor, cost_delta)
-
-                for donor_vendor, donor_products in orders.items():
-                    if donor_vendor == failing_vendor:
-                        continue
-                    donor_total = sum(p.total_price for p in donor_products.values())
-                    donor_min = self.get_minimum_order(donor_vendor)
-
-                    for component in list(donor_products.keys()):
-                        key = (component, failing_vendor)
-                        if key not in self.best_product_lookup:
-                            continue
-
-                        replacement = self.best_product_lookup[key]
-                        donor_product = donor_products[component]
-                        new_donor_total = donor_total - donor_product.total_price
-                        new_failing_total = failing_total + replacement.total_price
-
-                        # Donor becomes empty — ok if failing vendor gets enough
-                        if len(donor_products) <= 1:
-                            if new_failing_total < failing_min:
-                                continue
-                        else:
-                            if new_donor_total < donor_min:
-                                continue
-
-                        cost_delta = replacement.total_cost - donor_product.total_cost
-                        if best_swap is None or cost_delta < best_swap[2]:
-                            best_swap = (component, donor_vendor, cost_delta)
-
-                if best_swap:
-                    component, donor_vendor, _ = best_swap
-                    replacement = self.best_product_lookup[(component, failing_vendor)]
-                    del orders[donor_vendor][component]
-                    orders[failing_vendor][component] = replacement
-                    if not orders[donor_vendor]:
-                        del orders[donor_vendor]
-                    repaired = True
-
-            if not repaired:
-                break
-
-        # Final validation and cost calculation
-        total_cost = 0.0
-        for vendor, products in orders.items():
-            products_total = sum(p.total_price for p in products.values())
             vendor_min = self.get_minimum_order(vendor)
-            if products_total < vendor_min:
-                return float('inf'), None
-            shipping_cost = max(p.shipping for p in products.values())
-            total_cost += products_total + shipping_cost
+            if vendor_min > 0:
+                prob += (
+                    pulp.lpSum(offers[i][1].total_price * x[i] for i in indices)
+                    >= vendor_min * y[j]
+                )
 
-        return total_cost, orders if orders else None
+        prob += pulp.lpSum(y) <= self.max_vendor_combinations
 
-    def find_optimal_solution(self) -> Tuple[float, Optional[Dict[str, Dict[str, Product]]]]:
-        """Find optimal solution by trying different vendor groupings"""
-        print("\nFinding optimal solution...")
-        best_cost = float('inf')
-        best_orders = None
-        combinations_tried = 0
-        combinations_skipped = 0
+        status = prob.solve(pulp.PULP_CBC_CMD(msg=False))
+        if pulp.LpStatus[status] != 'Optimal':
+            print(f"Solver finished with status: {pulp.LpStatus[status]}")
+            return float('inf'), None
 
-        max_vendors = min(self.max_vendor_combinations, len(self.capable_vendors))
-        for num_vendors in range(1, max_vendors + 1):
-            print(f"Trying combinations of {num_vendors} vendors...")
+        orders: Dict[str, Dict[str, Product]] = {}
+        for i, (component, product) in enumerate(offers):
+            if x[i].value() > 0.5:
+                orders.setdefault(product.vendor, {})[component] = product
 
-            for vendor_group in itertools.combinations(self.capable_vendors, num_vendors):
-                # Coverage pre-check: can this group cover all required components?
-                combined_coverage = set()
-                for v in vendor_group:
-                    combined_coverage |= self.vendor_coverage[v]
-                if not self.required_components.issubset(combined_coverage):
-                    combinations_skipped += 1
-                    continue
+        # Recompute the cost from the solution (avoids solver float noise)
+        total_cost = sum(
+            sum(p.total_price for p in products.values()) + max(p.shipping for p in products.values())
+            for products in orders.values()
+        )
 
-                # Lower-bound pruning: cheapest possible cost from this group
-                lower_bound = 0.0
-                for component in self.required_components:
-                    cheapest_in_group = float('inf')
-                    for v in vendor_group:
-                        key = (component, v)
-                        if key in self.best_product_lookup:
-                            cost = self.best_product_lookup[key].total_cost
-                            if cost < cheapest_in_group:
-                                cheapest_in_group = cost
-                    lower_bound += cheapest_in_group
-
-                if lower_bound >= best_cost:
-                    combinations_skipped += 1
-                    continue
-
-                combinations_tried += 1
-                cost, orders = self.evaluate_vendor_group(list(vendor_group), self.required_components)
-                if orders and cost < best_cost:
-                    best_cost = cost
-                    best_orders = orders
-                    print(f"Found better solution: €{best_cost:.2f}")
-                    print("\nCurrent best solution:")
-                    for vendor, products in orders.items():
-                        shipping_cost = max(p.shipping for p in products.values())
-                        print_order_table(vendor, products, shipping_cost)
-
-            # Early termination: if within 5% of theoretical minimum, skip larger groups
-            if best_cost <= self.absolute_lower_bound * 1.05:
-                print(f"Solution within 5% of theoretical minimum, skipping larger groups")
-                break
-
-        print(f"\nCombinations evaluated: {combinations_tried}, skipped: {combinations_skipped}")
-
-        if best_orders:
-            print(f"\nBest solution found: €{best_cost:.2f}")
-            for vendor, products in best_orders.items():
-                shipping_cost = max(p.shipping for p in products.values())
-                print_order_table(vendor, products, shipping_cost)
-        else:
-            print("No valid solution found")
-
-        return best_cost, best_orders
+        print(f"\nOptimal solution found: €{total_cost:.2f}")
+        return total_cost, orders
 
     def optimize(self) -> Tuple[float, Optional[Dict[str, Dict[str, Product]]]]:
         """Find the optimal purchase plan"""
@@ -501,7 +358,7 @@ class PurchaseOptimizer:
             return cost, orders
         else:
             print("\nNo valid solution found.")
-            print("\nSuggestion: Try to lower minimum order costs to 0 in search.cfg and see if this solves the problem.")
+            print("\nSuggestion: Try to lower minimum order costs to 0 or raise MAX_VENDOR_COMBINATIONS in search.cfg and see if this solves the problem.")
             return float('inf'), None
     
     def generate_purchase_plan(self) -> None:

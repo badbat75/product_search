@@ -26,7 +26,7 @@ fi
 python -m pip install --upgrade pip
 
 # Install dependencies
-python -m pip install selenium anthropic pandas
+python -m pip install selenium anthropic pandas pulp
 
 # Copy config template if config doesn't exist
 if [ ! -f "$PROJECT_DIR/conf/search.cfg" ]; then

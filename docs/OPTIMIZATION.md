@@ -1,133 +1,78 @@
 # Optimization Algorithm
 
-The optimizer (`optimizer.py`) finds the cheapest way to purchase a set of required products across multiple vendors, subject to minimum order constraints and shipping costs.
+The optimizer (`optimizer.py`) finds the cheapest way to purchase a set of required products across multiple vendors, subject to minimum order constraints and shipping costs. It solves the problem **exactly** as a mixed-integer linear program (MILP) using [PuLP](https://coin-or.github.io/pulp/) with the bundled CBC solver.
 
 ## Problem Definition
 
 **Given:**
+
 - A set of required components (products), each with a desired quantity
 - For each component, a list of vendor offers (price, shipping cost, vendor name)
 
 **Find:** An assignment of components to vendors that minimizes total cost.
 
 **Constraints:**
-- Every required component must be purchased from exactly one vendor
-- Each vendor's product total (excluding shipping) must meet its minimum order threshold (per-vendor override or global `MINIMUM_ORDER` default, €50)
+
+- Every required component must be purchased from exactly one vendor (one specific offer)
+- Each vendor's product total (excluding shipping) must meet its minimum order threshold (per-vendor override or global `MINIMUM_ORDER` default)
 - At most `MAX_VENDOR_COMBINATIONS` vendors can be used (default: 4)
 
 **Cost model:**
+
 - Per-vendor cost = sum of (unit price x quantity) for assigned products + one shipping charge
-- Shipping charge per vendor = max shipping cost among that vendor's assigned products (assumes a single shipment per vendor)
+- Shipping charge per vendor = max shipping cost among that vendor's assigned offers (assumes a single shipment per vendor)
 - Total cost = sum of all per-vendor costs
 
-## Data Structures
+## MILP Formulation
 
-### Product
+The whole problem is a *fixed-charge assignment problem*: buying from a vendor incurs a one-off shipping charge shared by all products in that order. This structure is linear, so it can be solved to guaranteed optimality.
 
-Frozen dataclass representing a single vendor offer:
-- `price` — unit price
-- `shipping` — shipping cost for this offer
-- `quantity` — how many units needed
-- `total_price` = price x quantity
-- `total_cost` = total_price + shipping
+**Variables:**
 
-### Pre-computed Lookups (built once after loading data)
+| Variable | Type | Meaning |
+| -------- | ---- | ------- |
+| `x[p]` | binary | offer `p` (a CSV row) is purchased |
+| `y[v]` | binary | vendor `v` is used |
+| `s[v]` | continuous ≥ 0 | shipping charged by vendor `v` |
 
-| Lookup | Type | Purpose |
-|--------|------|---------|
-| `best_product_lookup` | `(component, vendor) -> Product` | Cheapest offer per component per vendor (by `total_cost`) |
-| `vendor_coverage` | `vendor -> {components}` | Which components each vendor carries |
-| `cheapest_per_component` | `component -> float` | Absolute cheapest `total_cost` across all vendors |
-| `absolute_lower_bound` | `float` | Sum of all cheapest products — theoretical cost floor |
-| `capable_vendors` | `[vendor]` | Vendors sorted by coverage count desc, min shipping asc |
+**Objective:**
 
-These replace per-combination list filtering with O(1) dictionary lookups.
-
-## Algorithm Overview
-
-```
-load CSVs
-    |
-build lookup tables
-    |
-filter dominated vendors
-    |
-for k = 1 to MAX_VENDOR_COMBINATIONS:
-    for each combination of k vendors:
-        |-- coverage pre-check --> skip if can't cover all components
-        |-- lower-bound pruning --> skip if can't beat current best
-        |-- greedy assignment (Phase 1)
-        |-- minimum-order repair (Phase 2)
-        |-- validate and score
-    |
-    early termination if solution is within 5% of theoretical minimum
-    |
-return best solution found
+```text
+minimize  Σ total_price(p)·x[p]  +  Σ s[v]
 ```
 
-## Phase 1: Greedy Assignment
+where `total_price(p)` = unit price × required quantity.
 
-For each required component, assign it to the vendor in the group that offers the lowest `total_cost` (price x quantity + shipping). Uses `best_product_lookup` for O(1) access.
+**Constraints:**
 
-This produces the cheapest possible assignment when ignoring minimum order constraints.
+1. `Σ x[p] = 1` over the offers of each component — exactly one offer per component
+2. `x[p] ≤ y[vendor(p)]` — buying an offer marks its vendor as used
+3. `s[v] ≥ shipping(p)·x[p]` for each offer `p` of vendor `v` — the order's shipping is the max shipping among chosen offers (minimization makes `s[v]` settle exactly at that max, and at 0 for unused vendors)
+4. `Σ total_price(p)·x[p] ≥ minimum_order(v)·y[v]` per vendor — minimum order applies only if the vendor is used
+5. `Σ y[v] ≤ MAX_VENDOR_COMBINATIONS`
 
-## Phase 2: Minimum Order Repair
+All offers are kept in the model (not just the cheapest per component/vendor): a pricier variant of the same product can be the globally optimal pick when it helps a vendor reach its minimum order threshold.
 
-After greedy assignment, some vendors may fall below the minimum order threshold. The repair loop attempts to fix this:
+If a required component has no offers at all, the optimizer reports it and stops instead of submitting an infeasible model.
 
-1. Identify vendors whose product total < their minimum order (per-vendor or global default)
-2. For each failing vendor, search for a component that can be reassigned **from** another vendor **to** the failing one:
-   - The failing vendor must be able to supply that component
-   - The donor vendor must still meet its own minimum order after losing the component (or become empty and be removed)
-   - Among all valid swaps, pick the one with the smallest cost increase
-3. Execute the best swap found
-4. Repeat until no vendors are failing or no more repairs are possible
+**Infeasibility** (e.g. minimum orders too high for the basket, or too few vendors allowed) is reported by the solver and surfaced to the user with a suggestion to relax `MINIMUM_ORDER` / `MAX_VENDOR_COMBINATIONS`.
 
-The loop runs at most `len(components)` iterations (each moves one component). If repair fails, the combination is rejected.
+## Why MILP instead of the previous heuristic
 
-**Why this matters:** Pure greedy assignment can reject valid combinations. Example:
-- Components A, B. Vendors X, Y. Min order €50.
-- Greedy assigns A to X (€45), B to Y (€10). Y fails minimum → combination rejected.
-- Repair reassigns A to Y (€50), B to X (€60). Both meet minimum. Valid solution.
+The previous implementation enumerated vendor combinations (`itertools.combinations`) with greedy assignment, repair, and pruning. Its estimates counted shipping *per product* while the real cost charges it *once per vendor*, so its "lower bounds" were not actual lower bounds: pruning and early termination could silently discard the optimal solution, and the greedy assignment over-penalized consolidating items at one vendor. On the reference basket (`farmacia.txt`) the heuristic returned €108.16 where the MILP finds €103.62.
 
-## Pruning Strategies
-
-### Dominated Vendor Filtering
-
-A vendor V is **dominated** if there exists another vendor that:
-1. Covers every component V covers (superset coverage)
-2. Has equal or lower `total_cost` for every one of those components
-
-Dominated vendors are removed from the candidate pool before generating combinations. This is safe: any solution using a dominated vendor can be improved by substituting the dominating vendor.
-
-Safety check: the filtered set must still cover all required components, otherwise the filter is not applied.
-
-### Coverage Pre-check
-
-Before evaluating a vendor combination, verify the union of their coverage sets includes all required components. Cost: O(k x |components|), much cheaper than full evaluation.
-
-### Lower-bound Pruning
-
-For each combination, compute a lower bound: sum of the cheapest `total_cost` per component from any vendor in the group, ignoring constraints. If this lower bound already exceeds the current best solution, skip the combination entirely.
-
-### Early Termination
-
-After completing all combinations of size k, if the best solution found is within 5% of the `absolute_lower_bound` (theoretical minimum ignoring all constraints), skip larger group sizes. Adding more vendors introduces additional shipping charges, making improvement unlikely.
+The MILP is exact by construction, needs no pruning/repair/dominance machinery, and is fast at this scale: ~140 offers × ~50 vendors solves in well under a second.
 
 ## Complexity
 
-**Without pruning:** O(C(V, k) x |components| x k) where V = vendors, k = max combination size
-
-**With pruning:** Most combinations are skipped by coverage and lower-bound checks. Dominated vendor filtering reduces V before combination generation.
-
-Typical performance for 10 components, 50 vendors, k=4: sub-second.
+Model size is linear in the number of offers: one binary per CSV row, two per vendor, and O(offers) constraints. CBC solves typical instances (tens of components, hundreds of offers) in milliseconds to seconds. Runtime is dominated by pandas CSV loading, not the solver.
 
 ## Configuration
 
 Set in `conf/search.cfg`:
 
 | Parameter | Default | Effect |
-|-----------|---------|--------|
+| --------- | ------- | ------ |
 | `MINIMUM_ORDER` | 50.0 | Default minimum product total per vendor (€). Set to 0 to disable. |
-| `MAX_VENDOR_COMBINATIONS` | 4 | Maximum vendors in a solution. Higher = slower but potentially cheaper. |
+| `MAX_VENDOR_COMBINATIONS` | 4 | Maximum number of vendors in a solution. Higher = potentially cheaper plan, more parcels. |
 | `VENDOR_MINIMUM_ORDERS` | *(empty)* | Per-vendor minimum order overrides, comma-separated `vendor:amount` pairs. Vendors not listed use `MINIMUM_ORDER`. Example: `Zfarmacia:30,Dr. Max:25` |

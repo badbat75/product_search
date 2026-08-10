@@ -52,7 +52,7 @@ Product list → Selenium (Trovaprezzi.it homepage search) → HTML parser or Cl
 - **`TrovaprezziProcessor`** (search.py): Orchestrates browser automation, anti-detection measures, CAPTCHA detection (DataDome, reCAPTCHA, hCaptcha, Cloudflare — waits up to 300s for human), homepage search box interaction, and CSV output
 - **`HtmlProcessor`** (lib/htmlparser.py): BeautifulSoup-based parser that extracts product data directly from Trovaprezzi listing HTML (`li.listing_item` elements)
 - **`AIProcessor`** (lib/aisearch.py): Claude API client with rate limiting, retry logic, and European price format parsing (1.234,56 → 1234.56). Used when `--ai` flag is passed
-- **`PurchaseOptimizer`** (optimizer.py): Brute-force vendor combination solver using `itertools.combinations`, respects minimum order thresholds
+- **`PurchaseOptimizer`** (optimizer.py): Exact MILP solver (PuLP + CBC) minimizing product prices + one shipping charge per vendor, subject to minimum order thresholds and a max-vendors cap (see docs/OPTIMIZATION.md)
 - **`Product`** (optimizer.py): Frozen dataclass with computed `total_price` and `total_cost` properties
 
 ### HTML Extraction (lib/htmlparser.py)
@@ -93,4 +93,4 @@ Templates in `templates/` (`purchase_plan.html` + `style.css`). The optimizer ge
 - **AI extraction**: `claude-3-haiku-20240307` for HTML extraction (pipe-delimited output format), enabled with `--ai` flag
 - **Price format**: European (comma decimal, dot thousands) — handled by both `HtmlProcessor._parse_price()` and `AIProcessor._parse_price()`
 - **CAPTCHA handling**: Detects DataDome, reCAPTCHA, hCaptcha, Cloudflare via visible element selectors and page source checks; pauses for manual resolution
-- **Vendor optimization**: Tries single-vendor first, then multi-vendor combinations up to `MAX_VENDOR_COMBINATIONS` (default 4)
+- **Vendor optimization**: Solved exactly as a mixed-integer linear program (PuLP/CBC); `MAX_VENDOR_COMBINATIONS` (default 4) caps how many vendors a solution may use
